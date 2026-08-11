@@ -20,20 +20,23 @@ Smooth public stream with ngrok:
     python3 live_cam_server.py --usb-ngrok
 
 Then open the printed URL from another device on the same network.
-Direct stream URL:
+MJPEG compatibility URL:
     http://<raspberry-pi-ip>:8000/stream.mjpg
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import html
+import hashlib
 import io
 import logging
 import shutil
 import socket
 import subprocess
+import struct
 import sys
 import threading
 import time
@@ -45,6 +48,7 @@ from typing import Optional
 
 
 BOUNDARY = b"FRAME"
+WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
 class StreamingOutput(io.BufferedIOBase):
@@ -108,6 +112,10 @@ class StreamingHandler(BaseHTTPRequestHandler):
             self._serve_index()
             return
 
+        if path == "/ws":
+            self._serve_websocket()
+            return
+
         if path == "/stream.mjpg":
             self._serve_stream()
             return
@@ -125,8 +133,11 @@ class StreamingHandler(BaseHTTPRequestHandler):
     def _serve_index(self) -> None:
         host = self.headers.get("Host", f"{self.server.server_address[0]}:{self.server.server_address[1]}")
         scheme = self.headers.get("X-Forwarded-Proto", "http").split(",", 1)[0].strip() or "http"
+        ws_scheme = "wss" if scheme == "https" else "ws"
+        ws_url = f"{ws_scheme}://{host}/ws"
         stream_url = f"{scheme}://{host}/stream.mjpg"
         snapshot_url = f"{scheme}://{host}/snapshot.jpg"
+        ws_url_json = json.dumps(ws_url)
         body = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -147,22 +158,23 @@ class StreamingHandler(BaseHTTPRequestHandler):
       grid-template-rows: auto 1fr auto;
     }}
     header, footer {{
-      padding: 14px 18px;
+      padding: 12px 16px;
       background: #181c20;
     }}
     h1 {{
       margin: 0;
-      font-size: 20px;
+      font-size: 18px;
       font-weight: 700;
     }}
     main {{
       display: grid;
       place-items: center;
-      padding: 16px;
+      padding: 12px;
     }}
-    img {{
-      width: min(100%, 1200px);
-      max-height: 78vh;
+    canvas {{
+      width: min(100%, 1100px);
+      max-height: 80vh;
+      aspect-ratio: 4 / 3;
       object-fit: contain;
       background: #050607;
       border: 1px solid #2d3339;
@@ -174,9 +186,14 @@ class StreamingHandler(BaseHTTPRequestHandler):
     .links {{
       display: flex;
       flex-wrap: wrap;
-      gap: 10px 18px;
+      align-items: center;
+      gap: 8px 16px;
       margin-top: 6px;
       font-size: 14px;
+    }}
+    #status {{
+      color: #b8c7d4;
+      min-width: 86px;
     }}
   </style>
 </head>
@@ -184,21 +201,116 @@ class StreamingHandler(BaseHTTPRequestHandler):
   <header>
     <h1>Raspberry Pi Live Camera</h1>
     <div class="links">
-      <a href="{html.escape(stream_url)}">Direct stream</a>
+      <span id="status">connecting</span>
+      <a href="{html.escape(stream_url)}">MJPEG</a>
       <a href="{html.escape(snapshot_url)}">Snapshot</a>
     </div>
   </header>
   <main>
-    <img src="/stream.mjpg" alt="Live camera stream">
+    <canvas id="video" width="640" height="480"></canvas>
   </main>
   <footer>
-    Stream URL: <a href="{html.escape(stream_url)}">{html.escape(stream_url)}</a>
+    Link: <a href="{html.escape(scheme + '://' + host + '/')}">{html.escape(scheme + '://' + host + '/')}</a>
   </footer>
+  <script>
+    const wsUrl = {ws_url_json};
+    const canvas = document.getElementById("video");
+    const context = canvas.getContext("2d", {{ alpha: false }});
+    const statusEl = document.getElementById("status");
+    let socket = null;
+    let latestFrame = null;
+    let drawing = false;
+    let frames = 0;
+    let lastFpsAt = performance.now();
+    let reconnectTimer = null;
+
+    function setStatus(text) {{
+      statusEl.textContent = text;
+    }}
+
+    function connect() {{
+      setStatus("connecting");
+      socket = new WebSocket(wsUrl);
+      socket.binaryType = "arraybuffer";
+      socket.onopen = () => setStatus("live");
+      socket.onmessage = (event) => {{
+        latestFrame = event.data;
+        if (!drawing) {{
+          requestAnimationFrame(drawNext);
+        }}
+      }};
+      socket.onclose = () => {{
+        setStatus("reconnecting");
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connect, 1000);
+      }};
+      socket.onerror = () => socket.close();
+    }}
+
+    function drawWithImage(data) {{
+      return new Promise((resolve) => {{
+        const url = URL.createObjectURL(new Blob([data], {{ type: "image/jpeg" }}));
+        const image = new Image();
+        image.onload = () => {{
+          canvas.width = image.naturalWidth || canvas.width;
+          canvas.height = image.naturalHeight || canvas.height;
+          context.drawImage(image, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(url);
+          resolve();
+        }};
+        image.onerror = () => {{
+          URL.revokeObjectURL(url);
+          resolve();
+        }};
+        image.src = url;
+      }});
+    }}
+
+    async function drawNext() {{
+      const data = latestFrame;
+      latestFrame = null;
+      if (!data) {{
+        drawing = false;
+        return;
+      }}
+
+      drawing = true;
+      try {{
+        if ("createImageBitmap" in window) {{
+          const blob = new Blob([data], {{ type: "image/jpeg" }});
+          const bitmap = await createImageBitmap(blob);
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+          context.drawImage(bitmap, 0, 0);
+          bitmap.close();
+        }} else {{
+          await drawWithImage(data);
+        }}
+      }} catch (error) {{
+        await drawWithImage(data);
+      }}
+
+      frames += 1;
+      const now = performance.now();
+      if (now - lastFpsAt >= 1000) {{
+        setStatus("live " + frames + " fps");
+        frames = 0;
+        lastFpsAt = now;
+      }}
+
+      if (latestFrame) {{
+        requestAnimationFrame(drawNext);
+      }} else {{
+        drawing = false;
+      }}
+    }}
+
+    connect();
+  </script>
 </body>
 </html>
 """
         self._send_bytes(body.encode("utf-8"), "text/html; charset=utf-8")
-
     def _serve_stream(self) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Age", "0")
@@ -237,6 +349,62 @@ class StreamingHandler(BaseHTTPRequestHandler):
                     next_send_at = time.monotonic() + min_interval
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             logging.info("Stream client disconnected: %s", self.client_address[0])
+
+    def _serve_websocket(self) -> None:
+        key = self.headers.get("Sec-WebSocket-Key")
+        if self.headers.get("Upgrade", "").lower() != "websocket" or not key:
+            self.send_error(HTTPStatus.BAD_REQUEST, "Expected WebSocket upgrade")
+            return
+
+        accept = base64.b64encode(
+            hashlib.sha1((key + WEBSOCKET_GUID).encode("ascii")).digest()
+        ).decode("ascii")
+
+        self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self.close_connection = True
+        self.connection.settimeout(8.0)
+
+        last_frame_id = 0
+        min_interval = 1.0 / self.server.max_stream_fps if self.server.max_stream_fps > 0 else 0.0
+        next_send_at = 0.0
+
+        try:
+            while True:
+                frame_id, frame = self.server.output.wait_for_frame(last_frame_id, timeout=5.0)
+                if frame is None:
+                    continue
+
+                if min_interval > 0:
+                    delay = next_send_at - time.monotonic()
+                    if delay > 0:
+                        time.sleep(delay)
+                        latest_id, latest_frame = self.server.output.wait_for_frame(last_frame_id, timeout=0)
+                        if latest_frame is not None:
+                            frame_id, frame = latest_id, latest_frame
+
+                self._send_websocket_binary(frame)
+                last_frame_id = frame_id
+
+                if min_interval > 0:
+                    next_send_at = time.monotonic() + min_interval
+        except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+            logging.info("WebSocket client disconnected: %s", self.client_address[0])
+
+    def _send_websocket_binary(self, payload: bytes) -> None:
+        length = len(payload)
+        if length <= 125:
+            header = struct.pack("!BB", 0x82, length)
+        elif length <= 65535:
+            header = struct.pack("!BBH", 0x82, 126, length)
+        else:
+            header = struct.pack("!BBQ", 0x82, 127, length)
+
+        self.connection.sendall(header)
+        self.connection.sendall(payload)
 
     def _serve_snapshot(self) -> None:
         frame = self.server.output.get_frame(timeout=5.0)
@@ -635,17 +803,34 @@ def start_ngrok_tunnel(args: argparse.Namespace) -> Optional[NgrokTunnel]:
     return tunnel
 
 
+def cli_option_provided(*names: str) -> bool:
+    for arg in sys.argv[1:]:
+        for name in names:
+            if arg == name or arg.startswith(name + "="):
+                return True
+    return False
+
+
 def apply_runtime_defaults(args: argparse.Namespace) -> None:
     if args.usb_ngrok:
-        args.backend = "opencv"
-        args.opencv_api = "v4l2"
-        args.fourcc = "YUYV"
-        args.width = 640
-        args.height = 480
-        args.fps = 15.0
-        args.stream_fps = 12.0
-        args.quality = 60
+        if not cli_option_provided("--backend"):
+            args.backend = "opencv"
+        if not cli_option_provided("--opencv-api"):
+            args.opencv_api = "v4l2"
+        if not cli_option_provided("--fourcc"):
+            args.fourcc = "auto"
+        if not cli_option_provided("--width"):
+            args.width = 480
+        if not cli_option_provided("--height"):
+            args.height = 360
+        if not cli_option_provided("--fps"):
+            args.fps = 20.0
+        if not cli_option_provided("--stream-fps"):
+            args.stream_fps = 15.0
+        if not cli_option_provided("--quality"):
+            args.quality = 45
         args.ngrok = True
+
     if args.smooth:
         if args.fps <= 0 or args.fps > 12:
             args.fps = 12.0
@@ -664,10 +849,9 @@ def apply_runtime_defaults(args: argparse.Namespace) -> None:
         else:
             args.stream_fps = args.fps if args.fps > 0 else 0.0
 
-    if args.ngrok and args.stream_fps > 12:
-        logging.info("Capping ngrok HTTP stream FPS from %.1f to 12.0 for lower latency.", args.stream_fps)
-        args.stream_fps = 12.0
-
+    if args.ngrok and args.stream_fps > 15:
+        logging.info("Capping ngrok HTTP stream FPS from %.1f to 15.0 for lower latency.", args.stream_fps)
+        args.stream_fps = 15.0
 
 def main() -> int:
     args = parse_args()
@@ -690,11 +874,11 @@ def main() -> int:
         lan_ip = get_lan_ip()
 
         print(f"Local viewer:  http://{lan_ip}:{args.port}/")
-        print(f"Local stream:  http://{lan_ip}:{args.port}/stream.mjpg")
-        print(f"Streaming:     {args.width}x{args.height}, camera {args.fps:g} FPS, HTTP {args.stream_fps:g} FPS, quality {args.quality}")
+        print(f"Local MJPEG:   http://{lan_ip}:{args.port}/stream.mjpg")
+        print(f"Streaming:     {args.width}x{args.height}, camera {args.fps:g} FPS, viewer {args.stream_fps:g} FPS, quality {args.quality}")
         if ngrok_tunnel:
             print(f"Universal link: {ngrok_tunnel.public_url}/")
-            print(f"Public stream:   {ngrok_tunnel.public_url}/stream.mjpg")
+            print(f"Public MJPEG:   {ngrok_tunnel.public_url}/stream.mjpg")
         print("Press Ctrl+C to stop.")
 
         server.serve_forever()
