@@ -15,6 +15,10 @@ Run:
 Force OpenCV for a USB webcam:
     python3 live_cam_server.py --backend opencv --width 640 --height 480 --fps 15
 
+Smooth public stream with ngrok:
+    ngrok config add-authtoken <your-token>
+    python3 live_cam_server.py --usb-ngrok
+
 Then open the printed URL from another device on the same network.
 Direct stream URL:
     http://<raspberry-pi-ip>:8000/stream.mjpg
@@ -23,13 +27,18 @@ Direct stream URL:
 from __future__ import annotations
 
 import argparse
+import json
 import html
 import io
 import logging
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
@@ -39,10 +48,11 @@ BOUNDARY = b"FRAME"
 
 
 class StreamingOutput(io.BufferedIOBase):
-    """Thread-safe sink used by Picamera2's JPEG encoder."""
+    """Thread-safe latest-frame buffer used by camera backends."""
 
     def __init__(self) -> None:
         self.frame: Optional[bytes] = None
+        self.frame_id = 0
         self.condition = threading.Condition()
 
     def writable(self) -> bool:
@@ -51,6 +61,7 @@ class StreamingOutput(io.BufferedIOBase):
     def write(self, buf: bytes) -> int:
         with self.condition:
             self.frame = bytes(buf)
+            self.frame_id += 1
             self.condition.notify_all()
         return len(buf)
 
@@ -59,6 +70,17 @@ class StreamingOutput(io.BufferedIOBase):
             if self.frame is None:
                 self.condition.wait(timeout=timeout)
             return self.frame
+
+    def wait_for_frame(self, last_seen_id: int, timeout: Optional[float] = None) -> tuple[int, Optional[bytes]]:
+        with self.condition:
+            if self.frame is None or self.frame_id == last_seen_id:
+                ready = self.condition.wait_for(
+                    lambda: self.frame is not None and self.frame_id != last_seen_id,
+                    timeout=timeout,
+                )
+                if not ready:
+                    return last_seen_id, None
+            return self.frame_id, self.frame
 
 
 class CameraServer(ThreadingHTTPServer):
@@ -70,10 +92,11 @@ class CameraServer(ThreadingHTTPServer):
         server_address: tuple[str, int],
         handler_class: type[BaseHTTPRequestHandler],
         output: StreamingOutput,
+        max_stream_fps: float,
     ) -> None:
         super().__init__(server_address, handler_class)
         self.output = output
-
+        self.max_stream_fps = max_stream_fps if max_stream_fps > 0 else 0.0
 
 class StreamingHandler(BaseHTTPRequestHandler):
     server: CameraServer
@@ -101,8 +124,9 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
     def _serve_index(self) -> None:
         host = self.headers.get("Host", f"{self.server.server_address[0]}:{self.server.server_address[1]}")
-        stream_url = f"http://{host}/stream.mjpg"
-        snapshot_url = f"http://{host}/snapshot.jpg"
+        scheme = self.headers.get("X-Forwarded-Proto", "http").split(",", 1)[0].strip() or "http"
+        stream_url = f"{scheme}://{host}/stream.mjpg"
+        snapshot_url = f"{scheme}://{host}/snapshot.jpg"
         body = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -183,17 +207,34 @@ class StreamingHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={BOUNDARY.decode()}")
         self.end_headers()
 
+        last_frame_id = 0
+        min_interval = 1.0 / self.server.max_stream_fps if self.server.max_stream_fps > 0 else 0.0
+        next_send_at = 0.0
+
         try:
             while True:
-                frame = self.server.output.get_frame(timeout=5.0)
+                frame_id, frame = self.server.output.wait_for_frame(last_frame_id, timeout=5.0)
                 if frame is None:
                     continue
 
+                if min_interval > 0:
+                    delay = next_send_at - time.monotonic()
+                    if delay > 0:
+                        time.sleep(delay)
+                        frame_id, frame = self.server.output.wait_for_frame(last_frame_id, timeout=0)
+                        if frame is None:
+                            continue
+
+                last_frame_id = frame_id
                 self.wfile.write(b"--" + BOUNDARY + b"\r\n")
                 self.wfile.write(b"Content-Type: image/jpeg\r\n")
                 self.wfile.write(f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii"))
                 self.wfile.write(frame)
                 self.wfile.write(b"\r\n")
+                self.wfile.flush()
+
+                if min_interval > 0:
+                    next_send_at = time.monotonic() + min_interval
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             logging.info("Stream client disconnected: %s", self.client_address[0])
 
@@ -262,9 +303,39 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=1280, help="Stream width in pixels. Default: 1280")
     parser.add_argument("--height", type=int, default=720, help="Stream height in pixels. Default: 720")
     parser.add_argument("--fps", type=float, default=24.0, help="Camera frame rate. Default: 24")
-    parser.add_argument("--quality", type=int, default=85, help="JPEG quality from 1 to 100. Default: 85")
+    parser.add_argument("--quality", type=int, default=0, help="JPEG quality from 1 to 100. Default: auto, lower when --ngrok is used.")
+    parser.add_argument(
+        "--stream-fps",
+        type=float,
+        default=0.0,
+        help="Maximum HTTP stream FPS. Default: auto, lower when --ngrok is used.",
+    )
+    parser.add_argument(
+        "--smooth",
+        action="store_true",
+        help="Prefer lower latency over image quality; useful for ngrok/mobile links.",
+    )
     parser.add_argument("--hflip", action="store_true", help="Flip image horizontally.")
     parser.add_argument("--vflip", action="store_true", help="Flip image vertically.")
+    parser.add_argument("--ngrok", action="store_true", help="Start an ngrok tunnel and print a public URL.")
+    parser.add_argument("--usb-ngrok", action="store_true", help="Shortcut for smooth USB webcam streaming through ngrok.")
+    parser.add_argument("--ngrok-bin", default="ngrok", help="Path/name of the ngrok CLI. Default: ngrok")
+    parser.add_argument(
+        "--ngrok-api-url",
+        default="http://127.0.0.1:4040",
+        help="Local ngrok agent API URL. Default: http://127.0.0.1:4040",
+    )
+    parser.add_argument(
+        "--ngrok-url",
+        default=None,
+        help="Optional reserved ngrok URL/domain, for example https://example.ngrok.app.",
+    )
+    parser.add_argument(
+        "--ngrok-timeout",
+        type=float,
+        default=20.0,
+        help="Seconds to wait for ngrok to publish a tunnel URL. Default: 20",
+    )
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     return parser.parse_args()
 
@@ -367,6 +438,9 @@ class OpenCVCamera:
                     capture.release()
                     continue
 
+                if hasattr(self.cv2, "CAP_PROP_BUFFERSIZE"):
+                    capture.set(self.cv2.CAP_PROP_BUFFERSIZE, 1)
+
                 if fourcc:
                     capture.set(self.cv2.CAP_PROP_FOURCC, self.cv2.VideoWriter_fourcc(*fourcc))
                 capture.set(self.cv2.CAP_PROP_FRAME_WIDTH, self.args.width)
@@ -418,11 +492,11 @@ class OpenCVCamera:
         return bool(ok)
 
     def _capture_loop(self) -> None:
-        frame_interval = 1.0 / self.args.fps if self.args.fps > 0 else 0.0
+        encode_interval = 1.0 / self.args.stream_fps if self.args.stream_fps > 0 else 0.0
+        next_encode_at = 0.0
         last_warning = 0.0
 
         while self.running.is_set():
-            loop_started = time.monotonic()
             ok, frame = self.capture.read()
             if not ok or frame is None or getattr(frame, "size", 0) == 0:
                 now = time.monotonic()
@@ -432,12 +506,13 @@ class OpenCVCamera:
                 time.sleep(0.05)
                 continue
 
+            now = time.monotonic()
+            if encode_interval > 0 and now < next_encode_at:
+                continue
+
             self._write_frame(frame)
-
-            if frame_interval > 0:
-                elapsed = time.monotonic() - loop_started
-                time.sleep(max(0.0, frame_interval - elapsed))
-
+            if encode_interval > 0:
+                next_encode_at = now + encode_interval
     def stop_recording(self) -> None:
         self.running.clear()
         self.thread.join(timeout=2.0)
@@ -467,6 +542,133 @@ def start_camera(args: argparse.Namespace, output: StreamingOutput):
     raise SystemExit("No camera backend could start:\n  " + "\n  ".join(errors))
 
 
+class NgrokTunnel:
+    def __init__(self, process: subprocess.Popen, public_url: str) -> None:
+        self.process = process
+        self.public_url = public_url.rstrip("/")
+
+    def stop(self) -> None:
+        if self.process.poll() is not None:
+            return
+
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=2.0)
+
+
+def local_ngrok_target(host: str, port: int) -> str:
+    target_host = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
+    return f"http://{target_host}:{port}"
+
+
+def tunnel_matches_port(tunnel: dict, port: int) -> bool:
+    addr = str(tunnel.get("config", {}).get("addr", ""))
+    return addr == str(port) or addr.endswith(f":{port}") or f":{port}/" in addr
+
+
+def wait_for_ngrok_url(api_url: str, port: int, timeout: float) -> str:
+    tunnels_url = api_url.rstrip("/") + "/api/tunnels"
+    deadline = time.monotonic() + timeout
+    last_error = "ngrok API was not ready"
+
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(tunnels_url, timeout=2.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            public_urls = []
+            for tunnel in payload.get("tunnels", []):
+                public_url = tunnel.get("public_url")
+                if public_url and tunnel_matches_port(tunnel, port):
+                    public_urls.append(public_url.rstrip("/"))
+
+            https_urls = [url for url in public_urls if url.startswith("https://")]
+            if https_urls:
+                return https_urls[0]
+            if public_urls:
+                return public_urls[0]
+
+            last_error = f"ngrok API returned no tunnel for local port {port}"
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            last_error = str(exc)
+
+        time.sleep(0.25)
+
+    raise RuntimeError(f"Timed out waiting for ngrok public URL. Last error: {last_error}")
+
+
+def start_ngrok_tunnel(args: argparse.Namespace) -> Optional[NgrokTunnel]:
+    if not args.ngrok:
+        return None
+
+    if shutil.which(args.ngrok_bin) is None:
+        raise SystemExit(
+            "ngrok CLI was not found. Install ngrok, then run:\n"
+            "  ngrok config add-authtoken <your-token>"
+        )
+
+    target = local_ngrok_target(args.host, args.port)
+    command = [args.ngrok_bin, "http", target, "--log=stdout"]
+    if args.ngrok_url:
+        command.extend(["--url", args.ngrok_url])
+
+    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    tunnel = NgrokTunnel(process, "")
+
+    try:
+        public_url = wait_for_ngrok_url(args.ngrok_api_url, args.port, args.ngrok_timeout)
+    except Exception as exc:
+        tunnel.stop()
+        raise SystemExit(
+            f"ngrok started but no public URL was published: {exc}\n"
+            "Check that your ngrok authtoken is configured and no other ngrok process is using port 4040."
+        ) from exc
+
+    if process.poll() is not None:
+        raise SystemExit(f"ngrok exited before the tunnel was ready. Run `ngrok http {args.port}` manually to see its error.")
+
+    tunnel.public_url = public_url
+    logging.info("ngrok tunnel started: %s -> %s", public_url, target)
+    return tunnel
+
+
+def apply_runtime_defaults(args: argparse.Namespace) -> None:
+    if args.usb_ngrok:
+        args.backend = "opencv"
+        args.opencv_api = "v4l2"
+        args.fourcc = "YUYV"
+        args.width = 640
+        args.height = 480
+        args.fps = 15.0
+        args.stream_fps = 12.0
+        args.quality = 60
+        args.ngrok = True
+    if args.smooth:
+        if args.fps <= 0 or args.fps > 12:
+            args.fps = 12.0
+        if args.stream_fps <= 0 or args.stream_fps > 10:
+            args.stream_fps = 10.0
+        if args.quality <= 0 or args.quality > 50:
+            args.quality = 50
+
+    if args.quality <= 0:
+        args.quality = 55 if args.ngrok else 75
+    args.quality = max(1, min(100, args.quality))
+
+    if args.stream_fps <= 0:
+        if args.ngrok:
+            args.stream_fps = min(args.fps, 10.0) if args.fps > 0 else 10.0
+        else:
+            args.stream_fps = args.fps if args.fps > 0 else 0.0
+
+    if args.ngrok and args.stream_fps > 12:
+        logging.info("Capping ngrok HTTP stream FPS from %.1f to 12.0 for lower latency.", args.stream_fps)
+        args.stream_fps = 12.0
+
+
 def main() -> int:
     args = parse_args()
     logging.basicConfig(
@@ -474,25 +676,39 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
-    output = StreamingOutput()
-    camera = start_camera(args, output)
-    server = CameraServer((args.host, args.port), StreamingHandler, output)
-    lan_ip = get_lan_ip()
+    apply_runtime_defaults(args)
 
-    print(f"Viewer page:   http://{lan_ip}:{args.port}/")
-    print(f"Direct stream: http://{lan_ip}:{args.port}/stream.mjpg")
-    print("Press Ctrl+C to stop.")
+    output = StreamingOutput()
+    camera = None
+    server = None
+    ngrok_tunnel = None
 
     try:
+        camera = start_camera(args, output)
+        server = CameraServer((args.host, args.port), StreamingHandler, output, args.stream_fps)
+        ngrok_tunnel = start_ngrok_tunnel(args)
+        lan_ip = get_lan_ip()
+
+        print(f"Local viewer:  http://{lan_ip}:{args.port}/")
+        print(f"Local stream:  http://{lan_ip}:{args.port}/stream.mjpg")
+        print(f"Streaming:     {args.width}x{args.height}, camera {args.fps:g} FPS, HTTP {args.stream_fps:g} FPS, quality {args.quality}")
+        if ngrok_tunnel:
+            print(f"Universal link: {ngrok_tunnel.public_url}/")
+            print(f"Public stream:   {ngrok_tunnel.public_url}/stream.mjpg")
+        print("Press Ctrl+C to stop.")
+
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopping camera server...")
     finally:
-        server.server_close()
-        camera.stop_recording()
+        if server is not None:
+            server.server_close()
+        if ngrok_tunnel is not None:
+            ngrok_tunnel.stop()
+        if camera is not None:
+            camera.stop_recording()
 
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
