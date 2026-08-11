@@ -13,7 +13,7 @@ Run:
     python3 live_cam_server.py
 
 Force OpenCV for a USB webcam:
-    python3 live_cam_server.py --backend opencv
+    python3 live_cam_server.py --backend opencv --width 640 --height 480 --fps 15
 
 Then open the printed URL from another device on the same network.
 Direct stream URL:
@@ -245,6 +245,18 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="OpenCV camera index for USB webcams. Default: 0",
     )
+    parser.add_argument(
+        "--opencv-api",
+        default="auto",
+        choices=("auto", "v4l2", "any"),
+        help="OpenCV capture API for USB webcams. Default: auto, tries V4L2 first.",
+    )
+    parser.add_argument(
+        "--fourcc",
+        default="auto",
+        choices=("auto", "MJPG", "YUYV", "YUY2", "none"),
+        help="USB camera pixel format for OpenCV. Default: auto.",
+    )
     parser.add_argument("--host", default="0.0.0.0", help="Address to bind to. Default: 0.0.0.0")
     parser.add_argument("--port", type=int, default=8000, help="Port to listen on. Default: 8000")
     parser.add_argument("--width", type=int, default=1280, help="Stream width in pixels. Default: 1280")
@@ -322,41 +334,105 @@ class OpenCVCamera:
         self.cv2 = cv2
         self.running = threading.Event()
         self.running.set()
-        self.capture = cv2.VideoCapture(args.camera_index)
-
-        if not self.capture.isOpened():
-            raise RuntimeError(f"Could not open camera index {args.camera_index}")
-
-        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-        if args.fps > 0:
-            self.capture.set(cv2.CAP_PROP_FPS, args.fps)
+        self.jpeg_params = [int(cv2.IMWRITE_JPEG_QUALITY), max(1, min(100, args.quality))]
+        self.capture, first_frame = self._open_capture()
+        self._write_frame(first_frame)
 
         self.thread = threading.Thread(target=self._capture_loop, name="opencv-camera", daemon=True)
         self.thread.start()
 
+    def _api_candidates(self) -> list[tuple[str, int]]:
+        candidates = []
+        if self.args.opencv_api in ("auto", "v4l2") and hasattr(self.cv2, "CAP_V4L2"):
+            candidates.append(("v4l2", self.cv2.CAP_V4L2))
+        if self.args.opencv_api in ("auto", "any"):
+            candidates.append(("any", self.cv2.CAP_ANY))
+        return candidates
+
+    def _fourcc_candidates(self) -> list[Optional[str]]:
+        if self.args.fourcc == "auto":
+            return ["MJPG", "YUYV", "YUY2", None]
+        if self.args.fourcc == "none":
+            return [None]
+        return [self.args.fourcc]
+
+    def _open_capture(self):
+        errors = []
+        for api_name, api_id in self._api_candidates():
+            for fourcc in self._fourcc_candidates():
+                label = fourcc or "default"
+                capture = self.cv2.VideoCapture(self.args.camera_index, api_id)
+                if not capture.isOpened():
+                    errors.append(f"{api_name}/{label}: could not open camera index {self.args.camera_index}")
+                    capture.release()
+                    continue
+
+                if fourcc:
+                    capture.set(self.cv2.CAP_PROP_FOURCC, self.cv2.VideoWriter_fourcc(*fourcc))
+                capture.set(self.cv2.CAP_PROP_FRAME_WIDTH, self.args.width)
+                capture.set(self.cv2.CAP_PROP_FRAME_HEIGHT, self.args.height)
+                if self.args.fps > 0:
+                    capture.set(self.cv2.CAP_PROP_FPS, self.args.fps)
+
+                first_frame = self._read_first_frame(capture)
+                if first_frame is not None:
+                    width = int(capture.get(self.cv2.CAP_PROP_FRAME_WIDTH))
+                    height = int(capture.get(self.cv2.CAP_PROP_FRAME_HEIGHT))
+                    fps = capture.get(self.cv2.CAP_PROP_FPS)
+                    logging.info(
+                        "Opened camera index %s with OpenCV %s backend, FOURCC %s, %sx%s at %.1f FPS.",
+                        self.args.camera_index,
+                        api_name,
+                        label,
+                        width,
+                        height,
+                        fps,
+                    )
+                    return capture, first_frame
+
+                errors.append(f"{api_name}/{label}: opened but no frames were readable")
+                capture.release()
+
+        raise RuntimeError("Could not read frames from USB camera. Tried: " + "; ".join(errors))
+
+    def _read_first_frame(self, capture):
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            ok, frame = capture.read()
+            if ok and frame is not None and getattr(frame, "size", 0) > 0:
+                return frame
+            time.sleep(0.05)
+        return None
+
+    def _write_frame(self, frame) -> bool:
+        if self.args.hflip and self.args.vflip:
+            frame = self.cv2.flip(frame, -1)
+        elif self.args.hflip:
+            frame = self.cv2.flip(frame, 1)
+        elif self.args.vflip:
+            frame = self.cv2.flip(frame, 0)
+
+        ok, encoded = self.cv2.imencode(".jpg", frame, self.jpeg_params)
+        if ok:
+            self.output.write(encoded.tobytes())
+        return bool(ok)
+
     def _capture_loop(self) -> None:
-        encode_params = [int(self.cv2.IMWRITE_JPEG_QUALITY), max(1, min(100, self.args.quality))]
         frame_interval = 1.0 / self.args.fps if self.args.fps > 0 else 0.0
+        last_warning = 0.0
 
         while self.running.is_set():
             loop_started = time.monotonic()
             ok, frame = self.capture.read()
-            if not ok:
-                logging.warning("OpenCV could not read a frame from camera index %s", self.args.camera_index)
-                time.sleep(0.2)
+            if not ok or frame is None or getattr(frame, "size", 0) == 0:
+                now = time.monotonic()
+                if now - last_warning >= 2.0:
+                    logging.warning("OpenCV could not read a frame from camera index %s", self.args.camera_index)
+                    last_warning = now
+                time.sleep(0.05)
                 continue
 
-            if self.args.hflip and self.args.vflip:
-                frame = self.cv2.flip(frame, -1)
-            elif self.args.hflip:
-                frame = self.cv2.flip(frame, 1)
-            elif self.args.vflip:
-                frame = self.cv2.flip(frame, 0)
-
-            ok, encoded = self.cv2.imencode(".jpg", frame, encode_params)
-            if ok:
-                self.output.write(encoded.tobytes())
+            self._write_frame(frame)
 
             if frame_interval > 0:
                 elapsed = time.monotonic() - loop_started
@@ -366,7 +442,6 @@ class OpenCVCamera:
         self.running.clear()
         self.thread.join(timeout=2.0)
         self.capture.release()
-
 
 def start_camera(args: argparse.Namespace, output: StreamingOutput):
     backends = ("picamera2", "opencv") if args.backend == "auto" else (args.backend,)
