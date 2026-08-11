@@ -16,9 +16,7 @@ For the same QR across restarts, use a reserved ngrok domain:
     python3 qr_session_cam_server.py --ngrok-url https://your-domain.ngrok.app
 
 The QR is constant for the running process: it points to the ngrok device landing page. A shareable stream
-session URL is created only after someone presses Create stream session. Only
-one session can exist while this process is running. Once created, the session
-cannot be ended from the web UI.
+session URL is created when the QR landing page is opened. Each new browser scan creates a fresh 10-minute token and revokes the previous one. The same browser scanning again renews its active token. The stream page includes an End session button.
 """
 
 from __future__ import annotations
@@ -43,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -87,24 +85,60 @@ class SessionState:
         self.lock = threading.Lock()
         self.session_id: Optional[str] = None
         self.created_at: Optional[float] = None
+        self.expires_at: Optional[float] = None
 
-    def create_once(self) -> tuple[str, bool]:
+    def _clear_if_expired_locked(self) -> None:
+        if self.session_id and self.expires_at is not None and self.expires_at <= time.time():
+            self.session_id = None
+            self.created_at = None
+            self.expires_at = None
+
+    def create_or_extend(self, presented_token: Optional[str], duration_seconds: float) -> tuple[str, float, str]:
+        now = time.time()
+        duration_seconds = max(30.0, duration_seconds)
         with self.lock:
-            if self.session_id:
-                return self.session_id, False
-            self.session_id = secrets.token_urlsafe(16)
-            self.created_at = time.time()
-            return self.session_id, True
+            self._clear_if_expired_locked()
+            if self.session_id and presented_token == self.session_id:
+                self.expires_at = now + duration_seconds
+                return self.session_id, self.expires_at, "extended"
+
+            self.session_id = secrets.token_urlsafe(18)
+            self.created_at = now
+            self.expires_at = now + duration_seconds
+            return self.session_id, self.expires_at, "created"
 
     def current(self) -> Optional[str]:
         with self.lock:
+            self._clear_if_expired_locked()
             return self.session_id
 
     def valid(self, session_id: str) -> bool:
         with self.lock:
+            self._clear_if_expired_locked()
             return self.session_id == session_id
 
+    def expiry(self, session_id: str) -> Optional[float]:
+        with self.lock:
+            self._clear_if_expired_locked()
+            if self.session_id == session_id:
+                return self.expires_at
+            return None
 
+    def remaining(self, session_id: str) -> int:
+        expiry = self.expiry(session_id)
+        if expiry is None:
+            return 0
+        return max(0, int(expiry - time.time()))
+
+    def end(self, session_id: str) -> bool:
+        with self.lock:
+            self._clear_if_expired_locked()
+            if self.session_id != session_id:
+                return False
+            self.session_id = None
+            self.created_at = None
+            self.expires_at = None
+            return True
 class OpenCVCamera:
     def __init__(self, args: argparse.Namespace, output: FrameBuffer) -> None:
         try:
@@ -247,15 +281,18 @@ class AppServer(ThreadingHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     server: AppServer
+    session_cookie_name = "cabcam_session"
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path == "/":
-            self._landing()
+            self._scan_entry()
         elif path == "/qr.png":
             self._qr_png()
         elif path == "/status.json":
             self._status()
+        elif path == "/expired":
+            self._expired_page("Session expired or ended")
         elif path.startswith("/s/"):
             self._viewer(path.removeprefix("/s/").strip("/"))
         elif path.startswith("/ws/"):
@@ -268,9 +305,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path == "/session":
-            self._create_session()
+            self._scan_entry()
         elif path == "/end":
-            self.send_error(HTTPStatus.FORBIDDEN, "Sessions cannot be ended once started")
+            self._end_session()
         else:
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -280,62 +317,65 @@ class Handler(BaseHTTPRequestHandler):
     def _session_url(self, session_id: str) -> str:
         return f"{self.server.base_url}/s/{session_id}"
 
-    def _landing(self) -> None:
-        session_id = self.server.sessions.current()
-        session_url = self._session_url(session_id) if session_id else ""
-        qr_url = self.server.base_url + "/qr.png"
-        if session_url:
-            controls = f"""
-        <p>One stream session is already active. New sessions cannot be created.</p>
-        <input id="share" readonly value="{html.escape(session_url)}">
-        <div class="actions">
-          <a class="button" href="{html.escape(session_url)}">Open stream</a>
-          <button onclick="navigator.clipboard.writeText(document.getElementById('share').value)">Copy link</button>
-          <button disabled>Session cannot be ended</button>
-        </div>"""
-        else:
-            controls = """
-        <form method="post" action="/session">
-          <button type="submit">Create stream session</button>
-        </form>
-        <p>No active session. The camera starts after a session is created.</p>"""
-        body = f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Camera Session</title>
-  <style>
-    :root {{ font-family: Arial, Helvetica, sans-serif; color-scheme: light dark; background: #101214; color: #f3f6f8; }}
-    body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 20px; }}
-    main {{ width: min(100%, 520px); }}
-    h1 {{ margin: 0 0 12px; font-size: 24px; }}
-    p {{ color: #b8c7d4; line-height: 1.45; }}
-    button, .button {{ display: inline-flex; align-items: center; justify-content: center; min-height: 42px; padding: 0 14px; border: 0; background: #2e8cff; color: white; font-weight: 700; text-decoration: none; cursor: pointer; }}
-    button:disabled {{ opacity: .55; cursor: not-allowed; }}
-    input {{ width: 100%; box-sizing: border-box; min-height: 40px; padding: 8px 10px; border: 1px solid #38424d; background: #151a1f; color: #f3f6f8; }}
-    img {{ width: 180px; height: 180px; background: white; padding: 8px; margin: 8px 0 16px; }}
-    .actions {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }}
-    a {{ color: #80c7ff; }}
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Camera Session</h1>
-    <img src="{html.escape(qr_url)}" alt="Constant device QR">
-    <p>QR target: <a href="{html.escape(self._landing_url())}">{html.escape(self._landing_url())}</a></p>
-    {controls}
-  </main>
-</body>
-</html>"""
-        self._send(body.encode(), "text/html; charset=utf-8")
+    def _duration_seconds(self) -> float:
+        return max(0.5, self.server.args.session_minutes) * 60.0
+
+    def _cookies(self) -> dict[str, str]:
+        cookies: dict[str, str] = {}
+        for item in self.headers.get("Cookie", "").split(";"):
+            if "=" not in item:
+                continue
+            name, value = item.strip().split("=", 1)
+            cookies[name] = value
+        return cookies
+
+    def _session_cookie(self) -> Optional[str]:
+        return self._cookies().get(self.session_cookie_name)
+
+    def _cookie_header(self, token: str, max_age: int) -> str:
+        parts = [
+            f"{self.session_cookie_name}={token}",
+            "Path=/",
+            f"Max-Age={max_age}",
+            "HttpOnly",
+            "SameSite=Lax",
+        ]
+        if self.server.base_url.startswith("https://"):
+            parts.append("Secure")
+        return "; ".join(parts)
+
+    def _clear_cookie_header(self) -> str:
+        return self._cookie_header("", 0)
+
+    def _scan_entry(self) -> None:
+        presented_token = self._session_cookie()
+        session_id, expires_at, action = self.server.sessions.create_or_extend(
+            presented_token,
+            self._duration_seconds(),
+        )
+        try:
+            self.server.start_camera_once()
+        except Exception as exc:
+            self.server.sessions.end(session_id)
+            logging.exception("Camera startup failed")
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            return
+
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", f"/s/{session_id}?scan={action}")
+        self.send_header("Set-Cookie", self._cookie_header(session_id, int(expires_at - time.time())))
+        self.end_headers()
 
     def _viewer(self, session_id: str) -> None:
-        if not self.server.sessions.valid(session_id):
-            self.send_error(HTTPStatus.NOT_FOUND, "Session not found")
+        expires_at = self.server.sessions.expiry(session_id)
+        if expires_at is None:
+            self._expired_page("This stream link has expired or was replaced by a newer QR scan.")
             return
+
+        session_url = self._session_url(session_id)
         ws_url = self.server.base_url.replace("https://", "wss://").replace("http://", "ws://") + f"/ws/{session_id}"
         snapshot = self.server.base_url + f"/snapshot/{session_id}"
+        qr_url = self.server.base_url + "/qr.png"
         body = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -344,28 +384,55 @@ class Handler(BaseHTTPRequestHandler):
   <title>Live Stream</title>
   <style>
     :root {{ font-family: Arial, Helvetica, sans-serif; color-scheme: light dark; background: #07090b; color: #f4f6f8; }}
-    body {{ margin: 0; min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }}
-    header {{ display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 10px 14px; background: #14191f; }}
-    canvas {{ width: 100%; height: calc(100vh - 52px); object-fit: contain; background: #000; }}
+    body {{ margin: 0; min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }}
+    header, footer {{ display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 10px 14px; background: #14191f; }}
+    canvas {{ width: 100%; height: calc(100vh - 112px); object-fit: contain; background: #000; }}
+    button, .button {{ min-height: 36px; padding: 0 12px; border: 0; background: #2e8cff; color: white; font-weight: 700; cursor: pointer; }}
+    button.danger {{ background: #d94141; }}
     a {{ color: #80c7ff; }}
-    #status {{ color: #b8c7d4; min-width: 84px; }}
+    #status, #countdown {{ color: #b8c7d4; }}
+    details {{ width: 100%; }}
+    img {{ width: 120px; height: 120px; background: white; padding: 6px; margin-top: 8px; }}
   </style>
 </head>
 <body>
   <header>
     <strong>Live Stream</strong>
     <span id="status">connecting</span>
+    <span id="countdown">--:--</span>
     <a href="{html.escape(snapshot)}">Snapshot</a>
-    <button onclick="navigator.clipboard.writeText(location.href)">Copy share link</button>
+    <button type="button" onclick="navigator.clipboard.writeText({json.dumps(session_url)})">Copy share link</button>
+    <form method="post" action="/end">
+      <input type="hidden" name="token" value="{html.escape(session_id)}">
+      <button class="danger" type="submit">End session</button>
+    </form>
   </header>
   <canvas id="video" width="{self.server.args.width}" height="{self.server.args.height}"></canvas>
+  <footer>
+    <details>
+      <summary>Extend access</summary>
+      <p>Scan the cab QR again with this same browser before the timer ends. That renews this stream for another {self.server.args.session_minutes:g} minutes.</p>
+      <img src="{html.escape(qr_url)}" alt="Permanent cab QR">
+    </details>
+  </footer>
   <script>
     const wsUrl = {json.dumps(ws_url)};
+    const expiresAt = {int(expires_at * 1000)};
     const canvas = document.getElementById('video');
     const ctx = canvas.getContext('2d', {{alpha:false}});
     const statusEl = document.getElementById('status');
+    const countdownEl = document.getElementById('countdown');
     let latest = null, drawing = false, frames = 0, lastFps = performance.now(), timer = null;
     function status(text) {{ statusEl.textContent = text; }}
+    function tick() {{
+      const remaining = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+      const minutes = Math.floor(remaining / 60).toString().padStart(2, '0');
+      const seconds = (remaining % 60).toString().padStart(2, '0');
+      countdownEl.textContent = 'expires ' + minutes + ':' + seconds;
+      if (remaining <= 0) location.replace('/expired');
+    }}
+    setInterval(tick, 1000);
+    tick();
     function connect() {{
       status('connecting');
       const ws = new WebSocket(wsUrl);
@@ -405,33 +472,74 @@ class Handler(BaseHTTPRequestHandler):
 </html>"""
         self._send(body.encode(), "text/html; charset=utf-8")
 
+    def _expired_page(self, message: str) -> None:
+        body = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Session Expired</title>
+  <style>
+    :root {{ font-family: Arial, Helvetica, sans-serif; color-scheme: light dark; background: #101214; color: #f3f6f8; }}
+    body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 20px; }}
+    main {{ width: min(100%, 520px); }}
+    a {{ color: #80c7ff; }}
+    img {{ width: 180px; height: 180px; background: white; padding: 8px; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Session unavailable</h1>
+    <p>{html.escape(message)}</p>
+    <p>Scan the cab QR again to create a new 10-minute stream session.</p>
+    <img src="{html.escape(self.server.base_url + '/qr.png')}" alt="Permanent cab QR">
+  </main>
+</body>
+</html>"""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Set-Cookie", self._clear_cookie_header())
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body.encode())))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body.encode())
+
     def _create_session(self) -> None:
-        session_id, created = self.server.sessions.create_once()
-        if created:
-            try:
-                self.server.start_camera_once()
-            except Exception as exc:
-                logging.exception("Camera startup failed")
-                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
-                return
+        self._scan_entry()
+
+    def _read_form(self) -> dict[str, str]:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(length).decode("utf-8") if length > 0 else ""
+        parsed = parse_qs(raw)
+        return {key: values[0] for key, values in parsed.items() if values}
+
+    def _end_session(self) -> None:
+        form = self._read_form()
+        token = form.get("token") or self._session_cookie() or ""
+        ended = self.server.sessions.end(token)
+        if ended:
+            self.server.stop_camera()
         self.send_response(HTTPStatus.SEE_OTHER)
-        self.send_header("Location", f"/s/{session_id}")
+        self.send_header("Location", "/expired")
+        self.send_header("Set-Cookie", self._clear_cookie_header())
         self.end_headers()
 
     def _status(self) -> None:
         session_id = self.server.sessions.current()
+        remaining = self.server.sessions.remaining(session_id) if session_id else 0
         body = json.dumps({
             "active": session_id is not None,
             "session_url": self._session_url(session_id) if session_id else None,
+            "remaining_seconds": remaining,
             "qr_target": self._landing_url(),
             "qr_url": self.server.base_url + "/qr.png",
-            "endable": False,
+            "endable": True,
         }).encode()
         self._send(body, "application/json")
 
     def _snapshot(self, session_id: str) -> None:
         if not self.server.sessions.valid(session_id):
-            self.send_error(HTTPStatus.NOT_FOUND, "Session not found")
+            self.send_error(HTTPStatus.NOT_FOUND, "Session expired")
             return
         frame = self.server.frames.latest(timeout=5.0)
         if frame is None:
@@ -441,7 +549,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _websocket(self, session_id: str) -> None:
         if not self.server.sessions.valid(session_id):
-            self.send_error(HTTPStatus.NOT_FOUND, "Session not found")
+            self.send_error(HTTPStatus.NOT_FOUND, "Session expired")
             return
         key = self.headers.get("Sec-WebSocket-Key")
         if self.headers.get("Upgrade", "").lower() != "websocket" or not key:
@@ -459,7 +567,7 @@ class Handler(BaseHTTPRequestHandler):
         interval = 1.0 / self.server.args.stream_fps if self.server.args.stream_fps > 0 else 0.0
         next_send = 0.0
         try:
-            while True:
+            while self.server.sessions.valid(session_id):
                 frame_id, frame = self.server.frames.wait(last_id, timeout=5.0)
                 if frame is None:
                     continue
@@ -470,6 +578,8 @@ class Handler(BaseHTTPRequestHandler):
                         latest_id, latest_frame = self.server.frames.wait(last_id, timeout=0)
                         if latest_frame is not None:
                             frame_id, frame = latest_id, latest_frame
+                if not self.server.sessions.valid(session_id):
+                    break
                 self._ws_binary(frame)
                 last_id = frame_id
                 if interval > 0:
@@ -629,6 +739,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fps", type=float, default=20.0)
     parser.add_argument("--stream-fps", type=float, default=15.0)
     parser.add_argument("--quality", type=int, default=45)
+    parser.add_argument("--session-minutes", type=float, default=10.0, help="Temporary stream session duration. Default: 10 minutes")
     parser.add_argument("--hflip", action="store_true")
     parser.add_argument("--vflip", action="store_true")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
@@ -673,7 +784,7 @@ def main() -> int:
             print("LAN mode enabled. QR uses the local network URL instead of ngrok.")
         else:
             print("QR URL was overridden with --public-url.")
-        print("The camera starts only after the first stream session is created.")
+        print("Scanning the QR creates a fresh 10-minute stream session; rescanning from the same browser renews it.")
         print("Press Ctrl+C to stop the server process.")
         print_qr(base_url + "/")
         server.serve_forever()
