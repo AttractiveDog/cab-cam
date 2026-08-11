@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
-Live camera web server for Raspberry Pi Camera Module.
+Live camera web server for a Raspberry Pi Camera Module or USB webcam.
 
 Install on Raspberry Pi OS:
     sudo apt update
     sudo apt install -y python3-picamera2
 
+For USB webcam fallback support:
+    sudo apt install -y python3-opencv
+
 Run:
     python3 live_cam_server.py
+
+Force OpenCV for a USB webcam:
+    python3 live_cam_server.py --backend opencv
 
 Then open the printed URL from another device on the same network.
 Direct stream URL:
@@ -23,6 +29,7 @@ import logging
 import socket
 import sys
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
@@ -226,6 +233,18 @@ def get_lan_ip() -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve a Raspberry Pi Camera live stream over HTTP.")
+    parser.add_argument(
+        "--backend",
+        default="auto",
+        choices=("auto", "picamera2", "opencv"),
+        help="Camera backend to use. Default: auto",
+    )
+    parser.add_argument(
+        "--camera-index",
+        type=int,
+        default=0,
+        help="OpenCV camera index for USB webcams. Default: 0",
+    )
     parser.add_argument("--host", default="0.0.0.0", help="Address to bind to. Default: 0.0.0.0")
     parser.add_argument("--port", type=int, default=8000, help="Port to listen on. Default: 8000")
     parser.add_argument("--width", type=int, default=1280, help="Stream width in pixels. Default: 1280")
@@ -238,14 +257,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def start_camera(args: argparse.Namespace, output: StreamingOutput):
+def _start_picamera2(args: argparse.Namespace, output: StreamingOutput, use_fps_control: bool):
     try:
         from libcamera import Transform
         from picamera2 import Picamera2
         from picamera2.encoders import JpegEncoder
         from picamera2.outputs import FileOutput
     except ImportError as exc:
-        raise SystemExit(
+        raise RuntimeError(
             "Missing camera package. Install it on Raspberry Pi OS with:\n"
             "  sudo apt update\n"
             "  sudo apt install -y python3-picamera2"
@@ -253,14 +272,124 @@ def start_camera(args: argparse.Namespace, output: StreamingOutput):
 
     picam2 = Picamera2()
     transform = Transform(hflip=args.hflip, vflip=args.vflip)
-    config = picam2.create_video_configuration(
-        main={"size": (args.width, args.height)},
-        controls={"FrameRate": args.fps},
-        transform=transform,
-    )
-    picam2.configure(config)
-    picam2.start_recording(JpegEncoder(q=args.quality), FileOutput(output))
+    config_args = {
+        "main": {"size": (args.width, args.height)},
+        "transform": transform,
+    }
+    if use_fps_control:
+        config_args["controls"] = {"FrameRate": args.fps}
+
+    try:
+        config = picam2.create_video_configuration(**config_args)
+        picam2.configure(config)
+        picam2.start_recording(JpegEncoder(q=args.quality), FileOutput(output))
+    except Exception:
+        picam2.close()
+        raise
+
     return picam2
+
+
+def start_picamera2(args: argparse.Namespace, output: StreamingOutput):
+    try:
+        return _start_picamera2(args, output, use_fps_control=True)
+    except RuntimeError as exc:
+        if "FrameDurationLimits" not in str(exc):
+            raise
+
+        logging.warning(
+            "Camera does not advertise libcamera FPS controls; retrying Picamera2 without --fps control. "
+            "This is common with USB/UVC cameras."
+        )
+        return _start_picamera2(args, output, use_fps_control=False)
+
+
+class OpenCVCamera:
+    """Small adapter with the same stop_recording method Picamera2 uses."""
+
+    def __init__(self, args: argparse.Namespace, output: StreamingOutput) -> None:
+        try:
+            import cv2
+        except ImportError as exc:
+            raise RuntimeError(
+                "Missing OpenCV. Install it on Raspberry Pi OS with:\n"
+                "  sudo apt update\n"
+                "  sudo apt install -y python3-opencv"
+            ) from exc
+
+        self.args = args
+        self.output = output
+        self.cv2 = cv2
+        self.running = threading.Event()
+        self.running.set()
+        self.capture = cv2.VideoCapture(args.camera_index)
+
+        if not self.capture.isOpened():
+            raise RuntimeError(f"Could not open camera index {args.camera_index}")
+
+        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+        if args.fps > 0:
+            self.capture.set(cv2.CAP_PROP_FPS, args.fps)
+
+        self.thread = threading.Thread(target=self._capture_loop, name="opencv-camera", daemon=True)
+        self.thread.start()
+
+    def _capture_loop(self) -> None:
+        encode_params = [int(self.cv2.IMWRITE_JPEG_QUALITY), max(1, min(100, self.args.quality))]
+        frame_interval = 1.0 / self.args.fps if self.args.fps > 0 else 0.0
+
+        while self.running.is_set():
+            loop_started = time.monotonic()
+            ok, frame = self.capture.read()
+            if not ok:
+                logging.warning("OpenCV could not read a frame from camera index %s", self.args.camera_index)
+                time.sleep(0.2)
+                continue
+
+            if self.args.hflip and self.args.vflip:
+                frame = self.cv2.flip(frame, -1)
+            elif self.args.hflip:
+                frame = self.cv2.flip(frame, 1)
+            elif self.args.vflip:
+                frame = self.cv2.flip(frame, 0)
+
+            ok, encoded = self.cv2.imencode(".jpg", frame, encode_params)
+            if ok:
+                self.output.write(encoded.tobytes())
+
+            if frame_interval > 0:
+                elapsed = time.monotonic() - loop_started
+                time.sleep(max(0.0, frame_interval - elapsed))
+
+    def stop_recording(self) -> None:
+        self.running.clear()
+        self.thread.join(timeout=2.0)
+        self.capture.release()
+
+
+def start_camera(args: argparse.Namespace, output: StreamingOutput):
+    backends = ("picamera2", "opencv") if args.backend == "auto" else (args.backend,)
+    errors = []
+
+    for backend in backends:
+        try:
+            if backend == "picamera2":
+                camera = start_picamera2(args, output)
+            elif backend == "opencv":
+                camera = OpenCVCamera(args, output)
+            else:
+                raise RuntimeError(f"Unknown camera backend: {backend}")
+
+            logging.info("Using %s camera backend.", backend)
+            return camera
+        except Exception as exc:
+            errors.append(f"{backend}: {exc}")
+            if args.backend != "auto":
+                raise SystemExit(str(exc)) from exc
+            logging.warning("%s backend failed: %s", backend, exc)
+
+    raise SystemExit("No camera backend could start:\n  " + "\n  ".join(errors))
 
 
 def main() -> int:
