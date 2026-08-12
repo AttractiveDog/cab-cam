@@ -1,0 +1,441 @@
+2026-08-13 01:26:17,059 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:26:18,124 INFO Connected to Node relay
+2026-08-13 01:26:18,126 INFO Device QR target: http://127.0.0.1:3099/d/cab-01
+2026-08-13 01:26:18,127 INFO Device QR image:   http://127.0.0.1:3099/qr/cab-01.svg
+2026-08-13 01:27:17,146 WARNING Node relay connection lost: [WinError 10054] An existing connection was forcibly closed by the remote host
+2026-08-13 01:27:18,147 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:20,157 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:21,159 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:23,161 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:24,164 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:26,174 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:27,175 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:29,188 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:30,190 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:32,193 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:33,196 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:35,207 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:36,210 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:38,219 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:39,221 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:41,224 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:42,225 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:44,229 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:45,230 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:47,234 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:48,235 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:50,237 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:51,238 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:53,254 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:54,256 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:56,270 WARNING Node relay connection lost: timed out
+2026-08-13 01:27:57,272 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:27:59,274 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:00,277 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:02,283 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:03,286 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:05,298 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:06,301 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:08,304 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:09,306 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:11,309 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:12,311 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:14,327 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:15,329 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:17,332 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:18,333 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:20,349 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:21,351 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:23,360 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:24,361 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:26,372 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:27,374 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:29,377 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:30,378 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:32,389 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:33,391 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:35,402 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:36,405 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:38,417 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:39,418 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:41,421 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:42,423 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:44,430 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:45,433 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:47,436 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:48,437 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:50,447 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:51,450 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:53,458 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:54,459 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:56,464 WARNING Node relay connection lost: timed out
+2026-08-13 01:28:57,467 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:28:59,471 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:00,474 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:02,486 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:03,487 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:05,496 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:06,497 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:08,505 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:09,506 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:11,517 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:12,520 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:14,528 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:15,530 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:17,540 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:18,541 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:20,549 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:21,550 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:23,565 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:24,566 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:26,606 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:27,638 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:29,646 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:30,650 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:32,684 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:33,718 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:35,733 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:36,735 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:38,751 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:39,784 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:41,790 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:42,822 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:44,857 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:45,858 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:47,865 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:48,867 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:50,895 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:51,924 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:53,926 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:54,958 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:29:56,962 WARNING Node relay connection lost: timed out
+2026-08-13 01:29:58,002 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:00,052 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:01,055 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:03,063 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:04,065 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:06,071 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:07,074 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:09,075 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:10,078 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:12,089 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:13,092 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:15,102 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:16,103 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:18,109 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:19,112 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:21,118 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:22,122 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:24,136 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:25,138 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:27,143 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:28,146 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:30,158 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:31,160 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:33,171 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:34,173 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:36,185 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:37,188 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:39,196 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:40,200 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:42,214 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:43,217 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:45,223 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:46,224 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:48,236 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:49,239 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:51,245 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:52,248 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:54,257 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:55,260 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:30:57,262 WARNING Node relay connection lost: timed out
+2026-08-13 01:30:58,265 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:00,275 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:01,278 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:03,292 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:04,294 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:06,299 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:07,301 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:09,314 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:10,316 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:12,329 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:13,330 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:15,340 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:16,343 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:18,353 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:19,356 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:21,371 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:22,374 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:24,378 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:25,381 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:27,399 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:28,400 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:30,403 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:31,406 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:33,407 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:34,410 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:36,426 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:37,429 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:39,445 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:40,447 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:42,464 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:43,465 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:45,475 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:46,476 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:48,479 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:49,481 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:51,488 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:52,490 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:54,506 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:55,509 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:31:57,522 WARNING Node relay connection lost: timed out
+2026-08-13 01:31:58,524 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:00,541 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:01,545 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:03,556 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:04,558 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:06,563 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:07,566 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:09,571 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:10,574 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:12,581 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:13,584 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:15,589 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:16,591 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:18,592 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:19,594 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:21,601 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:22,604 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:24,610 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:25,612 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:27,613 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:28,616 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:30,626 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:31,629 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:33,641 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:34,644 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:36,653 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:37,656 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:39,666 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:40,669 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:42,675 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:43,678 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:45,681 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:46,682 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:48,685 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:49,688 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:51,698 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:52,700 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:54,710 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:55,712 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:32:57,717 WARNING Node relay connection lost: timed out
+2026-08-13 01:32:58,719 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:00,722 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:01,726 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:03,733 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:04,737 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:06,752 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:07,752 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:09,758 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:10,760 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:12,773 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:13,776 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:15,791 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:16,793 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:18,811 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:19,814 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:21,820 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:22,823 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:24,830 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:25,833 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:27,844 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:28,846 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:30,848 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:31,851 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:33,856 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:34,859 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:36,867 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:37,869 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:39,882 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:40,884 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:42,889 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:43,892 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:45,896 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:46,898 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:48,911 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:49,914 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:51,926 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:52,927 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:54,941 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:55,944 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:33:57,956 WARNING Node relay connection lost: timed out
+2026-08-13 01:33:58,957 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:00,966 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:01,968 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:03,972 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:04,975 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:06,983 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:07,985 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:09,990 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:10,993 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:13,007 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:14,009 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:16,015 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:17,018 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:19,035 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:20,036 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:22,046 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:23,050 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:25,057 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:26,059 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:28,069 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:29,070 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:31,076 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:32,078 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:34,086 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:35,088 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:37,099 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:38,102 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:40,116 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:41,119 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:43,127 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:44,130 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:46,133 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:47,136 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:49,151 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:50,152 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:52,160 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:53,162 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:55,164 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:56,166 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:34:58,171 WARNING Node relay connection lost: timed out
+2026-08-13 01:34:59,172 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:01,184 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:02,187 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:04,204 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:05,206 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:07,224 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:08,227 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:10,233 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:11,235 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:13,252 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:14,255 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:16,266 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:17,267 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:19,281 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:20,284 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:22,292 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:23,293 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:25,302 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:26,304 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:28,312 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:29,313 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:31,318 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:32,319 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:34,330 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:35,332 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:37,346 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:38,348 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:40,364 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:41,365 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:43,367 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:44,370 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:46,383 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:47,384 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:49,400 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:50,403 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:52,410 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:53,412 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:55,423 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:56,426 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:35:58,430 WARNING Node relay connection lost: timed out
+2026-08-13 01:35:59,431 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:01,434 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:02,435 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:04,443 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:05,445 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:07,451 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:08,453 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:10,457 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:11,460 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:13,465 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:14,467 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:16,478 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:17,479 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:19,484 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:20,487 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:22,498 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:23,500 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:25,509 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:26,512 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:28,527 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:29,530 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:31,536 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:32,539 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:34,552 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:35,555 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:37,571 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:38,574 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:40,583 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:41,585 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:43,594 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:44,597 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:46,612 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:47,614 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:49,625 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:50,628 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:52,637 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:53,639 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:55,643 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:56,646 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:36:58,649 WARNING Node relay connection lost: timed out
+2026-08-13 01:36:59,650 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:01,665 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:02,667 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:04,679 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:05,682 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:07,685 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:08,688 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:10,701 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:11,704 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:13,713 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:14,715 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:16,725 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:17,728 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:19,739 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:20,741 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:22,745 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:23,748 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:25,764 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:26,767 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:28,777 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:29,780 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:31,790 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:32,791 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:34,805 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:35,809 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:37,815 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:38,819 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:40,823 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:41,824 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:43,826 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:44,828 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:46,840 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:47,842 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:49,852 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:50,855 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:52,867 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:53,869 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:55,872 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:56,874 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:37:58,876 WARNING Node relay connection lost: timed out
+2026-08-13 01:37:59,879 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:38:01,891 WARNING Node relay connection lost: timed out
+2026-08-13 01:38:02,894 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:38:04,899 WARNING Node relay connection lost: timed out
+2026-08-13 01:38:05,900 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:38:07,911 WARNING Node relay connection lost: timed out
+2026-08-13 01:38:08,914 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:38:10,918 WARNING Node relay connection lost: timed out
+2026-08-13 01:38:11,919 INFO Connecting to Node relay: ws://127.0.0.1:3099/api/pi/ws
+2026-08-13 01:38:13,925 WARNING Node relay connection lost: timed out

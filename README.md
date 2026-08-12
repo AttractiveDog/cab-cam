@@ -7,9 +7,10 @@ Cab Cam uses a Node relay as the central server. Multiple Raspberry Pi devices c
 1. Start the Node server.
 2. Start each Pi script with a unique `--device-id`.
 3. Node exposes one QR target per Pi: `/d/<device-id>`.
-4. A user scans that Pi QR and sees a user page with `Start a session`.
-5. When the user starts the session, Node creates a fresh viewer session for that Pi. With ngrok enabled, Node starts a new ngrok tunnel and redirects the user to that tunnel URL.
-6. The viewer sees only that Pi stream.
+4. The QR image includes a six-digit code above it.
+5. A user scans that Pi QR, enters their name and the six-digit QR code, then clicks `Start a session`.
+6. Node creates a fresh viewer session for that Pi. With ngrok enabled, Node starts a new ngrok tunnel and redirects the user to that tunnel URL.
+7. The viewer sees only that Pi stream, can end the session from the stream page, and can open the viewer list.
 
 ## Node Server
 
@@ -48,7 +49,7 @@ Useful Pi options:
 python3 qr_session_cam_server.py --device-id cab-01 --manual-start --width 640 --height 480 --stream-fps 12 --quality 50
 ```
 
-The Pi logs its QR target and QR image URL after Node accepts the connection.
+The Pi logs its QR target and QR image URL after Node accepts the connection. The admin dashboard also shows the QR code, current session starter, and active viewer names.
 
 ## Vercel
 

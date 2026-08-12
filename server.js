@@ -638,7 +638,7 @@ function createApp(config) {
     });
   }
 
-  function registerViewer(device, token, peer) {
+  function registerViewer(device, token, peer, viewerName = "") {
     cleanupDeviceSession(device);
     if (!device.activeSession || device.activeSession.token !== token) {
       peer.close(1008, "Invalid session");
@@ -646,10 +646,11 @@ function createApp(config) {
     }
 
     const id = crypto.randomUUID();
+    const name = String(viewerName || device.activeSession.startedBy || "Viewer").trim().slice(0, 80) || "Viewer";
     device.viewers.set(id, {
       token,
       conn: peer,
-      name: device.activeSession.startedBy || "Viewer",
+      name,
       connectedAt: Date.now(),
     });
     if (device.latestFrame) peer.sendBinary(device.latestFrame);
@@ -962,7 +963,7 @@ function createApp(config) {
       }
       try {
         const viewerUrl = await startUserSession(device, viewerName);
-        redirect(res, viewerUrl);
+        redirect(res, `${viewerUrl}${viewerUrl.includes("?") ? "&" : "?"}viewer=${encodeURIComponent(viewerName)}`);
       } catch (error) {
         sendHtml(res, 503, userMessagePage("Session could not start", error.message));
       }
@@ -977,7 +978,8 @@ function createApp(config) {
         sendHtml(res, 404, userMessagePage("Session expired", "Start a new session from the Pi QR page."));
         return;
       }
-      sendHtml(res, 200, viewerPage(device, token));
+      const viewerName = String(parsed.searchParams.get("viewer") || parsed.searchParams.get("name") || device.activeSession.startedBy || "").trim().slice(0, 80);
+      sendHtml(res, 200, viewerPage(device, token, viewerName));
       return;
     }
 
@@ -1012,6 +1014,18 @@ function createApp(config) {
         "Cache-Control": "no-store",
       });
       res.end(device.latestFrame);
+      return;
+    }
+
+    if (req.method === "GET" && parts[0] === "api" && parts[1] === "view" && parts[2] && parts[3] && parts[4] === "viewers") {
+      const device = deviceFromPath(parts, 2);
+      const token = decodeURIComponent(parts[3]);
+      cleanupDeviceSession(device || {});
+      if (!device || !device.activeSession || device.activeSession.token !== token) {
+        sendJson(res, 404, { error: "Session expired" });
+        return;
+      }
+      sendJson(res, 200, { viewers: viewerList(device) });
       return;
     }
 
@@ -1076,7 +1090,7 @@ function createApp(config) {
         return;
       }
       const peer = acceptWebSocket(req, socket);
-      if (peer) registerViewer(device, token, peer);
+      if (peer) registerViewer(device, token, peer, parsed.searchParams.get("name") || parsed.searchParams.get("viewer") || "");
       return;
     }
 
@@ -1146,16 +1160,22 @@ function deviceCard(device) {
     ? "active, " + fmtSeconds(device.session.remainingSeconds) + " left"
     : "none";
   const viewerUrl = device.session.viewerUrl || "";
+  const viewers = (device.viewerList || []).length
+    ? device.viewerList.map(v => '<li>' + esc(v.name) + ' <span>' + fmtSeconds(v.secondsConnected) + '</span></li>').join("")
+    : '<li>None</li>';
   return '<article class="panel device">' +
     '<div class="deviceHead"><div><h2>' + esc(device.name || device.id) + '</h2><p>' + esc(device.id) + '</p></div>' +
     '<span class="pill ' + (device.connected ? 'ok' : 'bad') + '">' + (device.connected ? 'online' : 'offline') + '</span></div>' +
     '<div class="deviceBody">' +
-      '<img class="qr" src="' + esc(new URL(device.qrUrl).pathname) + '" alt="QR for ' + esc(device.id) + '">' +
+      '<div class="qrBox"><strong>' + esc(device.accessCode || '') + '</strong><img class="qr" src="' + esc(new URL(device.qrUrl).pathname) + '" alt="QR for ' + esc(device.id) + '"></div>' +
       '<dl>' +
         '<dt>QR target</dt><dd><a href="' + esc(device.landingUrl) + '" target="_blank" rel="noopener">' + esc(device.landingUrl) + '</a></dd>' +
+        '<dt>QR code</dt><dd>' + esc(device.accessCode || '-') + '</dd>' +
         '<dt>Camera</dt><dd>' + (device.camera ? 'running' : 'stopped') + ', ' + (device.fps || 0) + ' fps</dd>' +
         '<dt>Frames</dt><dd>' + device.frames + '</dd>' +
         '<dt>Session</dt><dd>' + esc(sessionText) + '</dd>' +
+        '<dt>Started by</dt><dd>' + esc(device.session.startedBy || '-') + '</dd>' +
+        '<dt>Watching</dt><dd><ul class="viewerList">' + viewers + '</ul></dd>' +
         '<dt>Viewer URL</dt><dd>' + (viewerUrl ? '<a href="' + esc(viewerUrl) + '" target="_blank" rel="noopener">' + esc(viewerUrl) + '</a>' : '-') + '</dd>' +
         '<dt>Message</dt><dd>' + esc(device.message || '-') + '</dd>' +
         '<dt>Error</dt><dd>' + esc(device.lastError || device.session.tunnelError || '-') + '</dd>' +
@@ -1196,7 +1216,7 @@ setInterval(() => fetch("/api/devices").then(r => r.json()).then(render).catch((
 </script>`);
   }
 
-  function userLandingPage(deviceId, device, req) {
+  function userLandingPage(deviceId, device, req, errorMessage = "") {
     const online = Boolean(device && device.connected);
     const name = device ? device.name : deviceId;
     return pageShell("Start Session", `
@@ -1204,7 +1224,16 @@ setInterval(() => fetch("/api/devices").then(r => r.json()).then(render).catch((
   <section class="panel startPanel">
     <h1>${escapeHtml(name)}</h1>
     <p class="${online ? "okText" : "badText"}">${online ? "Pi is online" : "Pi is offline"}</p>
+    ${errorMessage ? `<p class="badText">${escapeHtml(errorMessage)}</p>` : ""}
     <form method="post" action="${escapeHtml(landingPath(deviceId))}/session">
+      <label>
+        <span>Name</span>
+        <input name="name" autocomplete="name" required maxlength="80" placeholder="Your name">
+      </label>
+      <label>
+        <span>QR code</span>
+        <input name="code" inputmode="numeric" pattern="[0-9]{6}" required maxlength="6" placeholder="6-digit code">
+      </label>
       <button type="submit" ${online ? "" : "disabled"}>Start a session</button>
     </form>
     <p class="muted">QR target: ${escapeHtml(landingUrl(deviceId, req))}</p>
@@ -1212,31 +1241,38 @@ setInterval(() => fetch("/api/devices").then(r => r.json()).then(render).catch((
 </main>`);
   }
 
-  function viewerPage(device, token) {
+  function viewerPage(device, token, viewerName) {
     const session = device.activeSession;
     return pageShell("Live Stream", `
 <header>
   <h1>${escapeHtml(device.name || device.id)}</h1>
   <span id="status">connecting</span>
   <span id="countdown">--:--</span>
+  <span>${escapeHtml(viewerName || session.startedBy || "Viewer")}</span>
   <a href="/snapshot/${encodeURIComponent(device.id)}/${encodeURIComponent(token)}">Snapshot</a>
+  <details class="viewerDetails"><summary>Viewers</summary><ul id="streamViewers" class="viewerList"><li>Loading</li></ul></details>
+  <form class="inlineForm" method="post" action="/view/${encodeURIComponent(device.id)}/${encodeURIComponent(token)}/end">
+    <button class="danger" type="submit">End Session</button>
+  </form>
 </header>
 <canvas id="video" width="960" height="540"></canvas>
 <script>
 const token = ${JSON.stringify(token)};
 const deviceId = ${JSON.stringify(device.id)};
+const viewerName = ${JSON.stringify(viewerName || session.startedBy || "Viewer")};
 const expiresAt = ${session.expiresAt};
 const canvas = document.getElementById("video");
 const ctx = canvas.getContext("2d", { alpha: false });
 const statusEl = document.getElementById("status");
 const countdownEl = document.getElementById("countdown");
+const streamViewersEl = document.getElementById("streamViewers");
 let latest = null;
 let drawing = false;
 let frames = 0;
 let lastFps = performance.now();
 function wsUrl() {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  return scheme + "//" + location.host + "/ws/view/" + encodeURIComponent(deviceId) + "/" + encodeURIComponent(token);
+  return scheme + "//" + location.host + "/ws/view/" + encodeURIComponent(deviceId) + "/" + encodeURIComponent(token) + "?name=" + encodeURIComponent(viewerName);
 }
 function tick() {
   const seconds = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
@@ -1251,6 +1287,20 @@ function connect() {
   ws.onmessage = event => { latest = event.data; if (!drawing) requestAnimationFrame(draw); };
   ws.onclose = () => { statusEl.textContent = "reconnecting"; setTimeout(connect, 1000); };
   ws.onerror = () => ws.close();
+}
+function escapeText(value) {
+  return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function refreshViewers() {
+  try {
+    const response = await fetch("/api/view/" + encodeURIComponent(deviceId) + "/" + encodeURIComponent(token) + "/viewers");
+    if (!response.ok) return;
+    const body = await response.json();
+    const viewers = body.viewers || [];
+    streamViewersEl.innerHTML = viewers.length
+      ? viewers.map(v => "<li>" + escapeText(v.name) + " <span>" + Math.max(0, v.secondsConnected || 0) + "s</span></li>").join("")
+      : "<li>None</li>";
+  } catch (_error) {}
 }
 function drawFallback(data) {
   return new Promise(resolve => {
@@ -1296,7 +1346,9 @@ async function draw() {
   else drawing = false;
 }
 setInterval(tick, 1000);
+setInterval(refreshViewers, 3000);
 tick();
+refreshViewers();
 connect();
 </script>`);
   }
@@ -1354,10 +1406,43 @@ connect();
     .deviceHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
     .deviceHead p { color: var(--muted); margin-bottom: 0; }
     .deviceBody { display: grid; grid-template-columns: 132px 1fr; gap: 14px; align-items: start; }
+    .qrBox { display: grid; gap: 6px; justify-items: center; }
+    .qrBox strong { font-size: 20px; letter-spacing: 0; }
     .qr { width: 132px; height: 132px; border: 1px solid var(--border); background: white; }
     dl { display: grid; grid-template-columns: 110px 1fr; gap: 8px 10px; margin: 0; }
     dt { color: var(--muted); }
     dd { margin: 0; overflow-wrap: anywhere; }
+    .viewerList { margin: 0; padding-left: 18px; }
+    .viewerList span { color: var(--muted); }
+    form { display: grid; gap: 12px; }
+    label { display: grid; gap: 6px; font-weight: 700; color: var(--muted); }
+    input {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0 10px;
+      font: inherit;
+      background: #fff;
+      color: #202124;
+    }
+    .inlineForm { display: inline-flex; margin: 0; }
+    .viewerDetails { position: relative; color: #fff; }
+    .viewerDetails summary { cursor: pointer; font-weight: 700; }
+    .viewerDetails .viewerList {
+      position: absolute;
+      right: 0;
+      top: 28px;
+      width: 220px;
+      max-height: 240px;
+      overflow: auto;
+      padding: 10px 10px 10px 28px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      color: #202124;
+      z-index: 5;
+    }
     .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     button {
       min-height: 40px;
@@ -1409,13 +1494,8 @@ connect();
   };
 }
 
-async function sendQrSvg(res, text) {
-  if (OptionalQRCode) {
-    const svg = await OptionalQRCode.toString(text, {
-      type: "svg",
-      errorCorrectionLevel: "M",
-      margin: 2,
-    });
+async function sendQrSvg(res, text, code = "") {
+  const sendSvg = (svg) => {
     const payload = Buffer.from(svg, "utf8");
     res.writeHead(200, {
       "Content-Type": "image/svg+xml; charset=utf-8",
@@ -1423,22 +1503,36 @@ async function sendQrSvg(res, text) {
       "Cache-Control": "no-store",
     });
     res.end(payload);
+  };
+
+  if (OptionalQRCode) {
+    const qrSvg = await OptionalQRCode.toString(text, {
+      type: "svg",
+      errorCorrectionLevel: "M",
+      margin: 2,
+    });
+    sendSvg(wrapQrSvg(qrSvg, code, text));
     return;
   }
 
   let svg;
   try {
-    svg = makeQrSvg(text);
+    svg = wrapQrSvg(makeQrSvg(text), code, text);
   } catch (_error) {
     svg = `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="120" viewBox="0 0 420 120"><rect width="100%" height="100%" fill="white"/><text x="12" y="32" font-family="Arial" font-size="16">Install npm package "qrcode" for QR rendering.</text><text x="12" y="68" font-family="Arial" font-size="12">${escapeHtml(text)}</text></svg>`;
   }
-  const payload = Buffer.from(svg, "utf8");
-  res.writeHead(200, {
-    "Content-Type": "image/svg+xml; charset=utf-8",
-    "Content-Length": payload.length,
-    "Cache-Control": "no-store",
-  });
-  res.end(payload);
+  sendSvg(svg);
+}
+
+function wrapQrSvg(qrSvg, code, text) {
+  const encoded = Buffer.from(qrSvg, "utf8").toString("base64");
+  const label = code ? `Code: ${code}` : "Code required";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="280" height="328" viewBox="0 0 280 328">
+<rect width="100%" height="100%" fill="#fff"/>
+<text x="140" y="30" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700" fill="#111">${escapeHtml(label)}</text>
+<image x="20" y="50" width="240" height="240" href="data:image/svg+xml;base64,${encoded}"/>
+<text x="140" y="310" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="10" fill="#555">${escapeHtml(text)}</text>
+</svg>`;
 }
 
 function makeQrSvg(text) {
