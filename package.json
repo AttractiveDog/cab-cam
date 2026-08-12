@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "start:lan": "node server.js --no-ngrok",
-    "check": "node --check server.js"
+    "check": "node --check server.js && node --check api/index.js",
+    "deploy:vercel": "vercel --prod"
   },
   "dependencies": {
     "qrcode": "^1.5.4"

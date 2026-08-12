@@ -21,9 +21,9 @@ const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 function parseArgs(argv) {
   const args = {
     host: "0.0.0.0",
-    port: 3000,
+    port: Number(process.env.PORT || 3000),
     publicBaseUrl: process.env.PUBLIC_BASE_URL || "",
-    noNgrok: false,
+    noNgrok: Boolean(process.env.VERCEL) || process.env.NO_NGROK === "1",
     ngrokBin: "ngrok",
     ngrokTimeoutMs: 20000,
     ngrokApiStartPort: 4040,
@@ -394,6 +394,24 @@ function createApp(config) {
     return `/view/${encodeURIComponent(deviceId)}/${encodeURIComponent(token)}`;
   }
 
+  function deviceAccessCode(deviceId) {
+    const digest = crypto
+      .createHmac("sha256", config.piKey || "cab-cam")
+      .update(String(deviceId))
+      .digest("hex");
+    const value = Number.parseInt(digest.slice(0, 10), 16) % 1000000;
+    return String(value).padStart(6, "0");
+  }
+
+  function viewerList(device) {
+    const now = Date.now();
+    return Array.from(device.viewers.values()).map((viewer) => ({
+      name: viewer.name,
+      connectedAt: viewer.connectedAt,
+      secondsConnected: Math.max(0, Math.floor((now - viewer.connectedAt) / 1000)),
+    }));
+  }
+
   function getDevice(rawDeviceId, create = false) {
     const deviceId = sanitizeDeviceId(rawDeviceId);
     if (!deviceId) return null;
@@ -447,7 +465,9 @@ function createApp(config) {
       lastError: device.lastError,
       landingUrl: landingUrl(device.id, req),
       qrUrl: `${externalBaseUrl(req)}${qrPath(device.id)}`,
+      accessCode: deviceAccessCode(device.id),
       viewers: device.viewers.size,
+      viewerList: viewerList(device),
       session: session ? {
         active: true,
         token: session.token,
@@ -456,6 +476,7 @@ function createApp(config) {
         remainingSeconds: Math.max(0, Math.ceil((session.expiresAt - Date.now()) / 1000)),
         tunnelUrl: session.tunnel ? session.tunnel.publicUrl : null,
         viewerUrl: session.viewerUrl || null,
+        startedBy: session.startedBy || "",
         tunnelStarting: Boolean(session.tunnelStarting),
         tunnelError: session.tunnelError || "",
       } : {
@@ -466,6 +487,7 @@ function createApp(config) {
         remainingSeconds: 0,
         tunnelUrl: null,
         viewerUrl: null,
+        startedBy: "",
         tunnelStarting: false,
         tunnelError: "",
       },
@@ -594,8 +616,8 @@ function createApp(config) {
     peer.sendText(JSON.stringify({
       type: "hello",
       device_id: device.id,
-      device_url: landingUrl(device.id),
-      qr_url: `${externalBaseUrl()}${qrPath(device.id)}`,
+      device_url: landingUrl(device.id, req),
+      qr_url: `${externalBaseUrl(req)}${qrPath(device.id)}`,
       at: new Date().toISOString(),
     }));
     pushState();
@@ -624,7 +646,12 @@ function createApp(config) {
     }
 
     const id = crypto.randomUUID();
-    device.viewers.set(id, { token, conn: peer, connectedAt: Date.now() });
+    device.viewers.set(id, {
+      token,
+      conn: peer,
+      name: device.activeSession.startedBy || "Viewer",
+      connectedAt: Date.now(),
+    });
     if (device.latestFrame) peer.sendBinary(device.latestFrame);
     peer.on("close", () => {
       device.viewers.delete(id);
@@ -644,7 +671,7 @@ function createApp(config) {
     pushState();
   }
 
-  function createSession(device) {
+  function createSession(device, startedBy) {
     cleanupDeviceSession(device);
     stopSession(device);
 
@@ -652,6 +679,7 @@ function createApp(config) {
     const now = Date.now();
     device.activeSession = {
       token,
+      startedBy,
       createdAt: now,
       expiresAt: now + config.sessionMinutes * 60 * 1000,
       viewerUrl: null,
@@ -788,12 +816,36 @@ function createApp(config) {
     }
   }
 
-  async function startUserSession(device) {
+  async function startUserSession(device, startedBy) {
     if (!device.connected) {
       throw new Error("This Pi is not connected to the Node server.");
     }
-    const session = createSession(device);
+    const session = createSession(device, startedBy);
     return startTunnelForSession(device, session);
+  }
+
+  function readBody(req) {
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      let total = 0;
+      req.on("data", (chunk) => {
+        total += chunk.length;
+        if (total > 16384) {
+          reject(new Error("Request body too large"));
+          req.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      req.on("error", reject);
+    });
+  }
+
+  async function readForm(req) {
+    const raw = await readBody(req);
+    const params = new URLSearchParams(raw);
+    return Object.fromEntries(params.entries());
   }
 
   function deviceFromPath(parts, index) {
@@ -874,7 +926,7 @@ function createApp(config) {
         sendJson(res, 400, { error: "Invalid device id" });
         return;
       }
-      await sendQrSvg(res, landingUrl(deviceId, req));
+      await sendQrSvg(res, landingUrl(deviceId, req), deviceAccessCode(deviceId));
       return;
     }
 
@@ -891,8 +943,25 @@ function createApp(config) {
         sendHtml(res, 404, userMessagePage("Device not found", "This QR code does not match a registered Pi."));
         return;
       }
+      let form;
       try {
-        const viewerUrl = await startUserSession(device);
+        form = await readForm(req);
+      } catch (error) {
+        sendHtml(res, 400, userMessagePage("Invalid request", error.message));
+        return;
+      }
+      const viewerName = String(form.name || "").trim().slice(0, 80);
+      const code = String(form.code || "").trim();
+      if (!viewerName) {
+        sendHtml(res, 400, userLandingPage(device.id, device, req, "Enter your name to start the stream."));
+        return;
+      }
+      if (code !== deviceAccessCode(device.id)) {
+        sendHtml(res, 403, userLandingPage(device.id, device, req, "Enter the code printed above this QR."));
+        return;
+      }
+      try {
+        const viewerUrl = await startUserSession(device, viewerName);
         redirect(res, viewerUrl);
       } catch (error) {
         sendHtml(res, 503, userMessagePage("Session could not start", error.message));
@@ -909,6 +978,19 @@ function createApp(config) {
         return;
       }
       sendHtml(res, 200, viewerPage(device, token));
+      return;
+    }
+
+    if (req.method === "POST" && parts[0] === "view" && parts[1] && parts[2] && parts[3] === "end") {
+      const device = deviceFromPath(parts, 1);
+      const token = decodeURIComponent(parts[2]);
+      cleanupDeviceSession(device || {});
+      if (!device || !device.activeSession || device.activeSession.token !== token) {
+        sendHtml(res, 404, userMessagePage("Session expired", "Start a new session from the Pi QR page."));
+        return;
+      }
+      stopSession(device);
+      sendHtml(res, 200, userMessagePage("Session ended", "The stream session has been ended."));
       return;
     }
 
@@ -1546,6 +1628,19 @@ function drawFormatBits(matrix, reserved, errorCorrectionBits, mask) {
   set(8, size - 8, true);
 }
 
+function createHttpServer(config) {
+  const app = createApp(config);
+  const server = http.createServer((req, res) => {
+    app.handleHttp(req, res).catch((error) => {
+      console.error(error);
+      sendJson(res, 500, { error: "Internal server error" });
+    });
+  });
+  server.on("upgrade", app.handleUpgrade);
+  server.cabCamApp = app;
+  return server;
+}
+
 async function main() {
   let config;
   try {
@@ -1556,14 +1651,8 @@ async function main() {
     process.exit(2);
   }
 
-  const app = createApp(config);
-  const server = http.createServer((req, res) => {
-    app.handleHttp(req, res).catch((error) => {
-      console.error(error);
-      sendJson(res, 500, { error: "Internal server error" });
-    });
-  });
-  server.on("upgrade", app.handleUpgrade);
+  const server = createHttpServer(config);
+  const app = server.cabCamApp;
 
   function stop() {
     console.log("\nStopping Cab Cam server...");
@@ -1594,4 +1683,14 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { createApp, parseArgs, WebSocketPeer, makeQrSvg };
+if (process.env.VERCEL) {
+  const exportedServer = createHttpServer(parseArgs([]));
+  exportedServer.createApp = createApp;
+  exportedServer.createHttpServer = createHttpServer;
+  exportedServer.parseArgs = parseArgs;
+  exportedServer.WebSocketPeer = WebSocketPeer;
+  exportedServer.makeQrSvg = makeQrSvg;
+  module.exports = exportedServer;
+} else {
+  module.exports = { createApp, createHttpServer, parseArgs, WebSocketPeer, makeQrSvg };
+}

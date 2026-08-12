@@ -49,3 +49,27 @@ python3 qr_session_cam_server.py --device-id cab-01 --manual-start --width 640 -
 ```
 
 The Pi logs its QR target and QR image URL after Node accepts the connection.
+
+## Vercel
+
+Vercel mode uses the Vercel deployment URL as the public stream/session URL. It does not start ngrok inside Vercel.
+
+Set production environment variables before deploying:
+
+```bash
+vercel env add PI_SHARED_KEY production
+vercel env add DASHBOARD_TOKEN production
+vercel env add SESSION_MINUTES production
+```
+
+Deploy:
+
+```bash
+vercel --prod
+```
+
+After deployment, run each Pi against the Vercel WebSocket URL:
+
+```bash
+python3 qr_session_cam_server.py --server wss://<your-vercel-domain>/api/pi/ws --key <PI_SHARED_KEY> --device-id cab-01
+```
