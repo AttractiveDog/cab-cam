@@ -9,42 +9,47 @@ const os = require("os");
 const { EventEmitter } = require("events");
 const { URL } = require("url");
 
+let OptionalQRCode = null;
+try {
+  OptionalQRCode = require("qrcode");
+} catch (_error) {
+  OptionalQRCode = null;
+}
+
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 function parseArgs(argv) {
   const args = {
     host: "0.0.0.0",
     port: 3000,
+    publicBaseUrl: process.env.PUBLIC_BASE_URL || "",
     noNgrok: false,
     ngrokBin: "ngrok",
-    ngrokApiUrl: "http://127.0.0.1:4040",
-    ngrokUrl: "",
-    ngrokTimeout: 20000,
+    ngrokTimeoutMs: 20000,
+    ngrokApiStartPort: 4040,
     sessionMinutes: 10,
     piKey: process.env.PI_SHARED_KEY || crypto.randomBytes(18).toString("base64url"),
-    dashboardToken: process.env.DASHBOARD_TOKEN || crypto.randomBytes(18).toString("base64url"),
+    adminToken: process.env.DASHBOARD_TOKEN || crypto.randomBytes(18).toString("base64url"),
   };
 
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index];
     const next = () => {
       index += 1;
-      if (index >= argv.length) {
-        throw new Error(`Missing value for ${item}`);
-      }
+      if (index >= argv.length) throw new Error(`Missing value for ${item}`);
       return argv[index];
     };
 
     if (item === "--host") args.host = next();
     else if (item === "--port") args.port = Number(next());
+    else if (item === "--public-base-url") args.publicBaseUrl = next().replace(/\/$/, "");
     else if (item === "--no-ngrok") args.noNgrok = true;
     else if (item === "--ngrok-bin") args.ngrokBin = next();
-    else if (item === "--ngrok-api-url") args.ngrokApiUrl = next();
-    else if (item === "--ngrok-url") args.ngrokUrl = next();
-    else if (item === "--ngrok-timeout") args.ngrokTimeout = Number(next()) * 1000;
+    else if (item === "--ngrok-timeout") args.ngrokTimeoutMs = Number(next()) * 1000;
+    else if (item === "--ngrok-api-start-port") args.ngrokApiStartPort = Number(next());
     else if (item === "--session-minutes") args.sessionMinutes = Number(next());
     else if (item === "--pi-key") args.piKey = next();
-    else if (item === "--dashboard-token") args.dashboardToken = next();
+    else if (item === "--dashboard-token") args.adminToken = next();
     else if (item === "--help" || item === "-h") {
       printHelp();
       process.exit(0);
@@ -56,10 +61,13 @@ function parseArgs(argv) {
   if (!Number.isFinite(args.port) || args.port <= 0 || args.port > 65535) {
     throw new Error("--port must be a valid TCP port");
   }
+  if (!Number.isFinite(args.ngrokApiStartPort) || args.ngrokApiStartPort <= 0 || args.ngrokApiStartPort > 65535) {
+    throw new Error("--ngrok-api-start-port must be a valid TCP port");
+  }
   if (!Number.isFinite(args.sessionMinutes) || args.sessionMinutes <= 0) {
     throw new Error("--session-minutes must be greater than zero");
   }
-  if (!Number.isFinite(args.ngrokTimeout) || args.ngrokTimeout <= 0) {
+  if (!Number.isFinite(args.ngrokTimeoutMs) || args.ngrokTimeoutMs <= 0) {
     throw new Error("--ngrok-timeout must be greater than zero");
   }
 
@@ -67,22 +75,22 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Cab Cam Node relay
+  console.log(`Cab Cam multi-Pi Node relay
 
 Usage:
   node server.js [options]
 
 Options:
-  --host <host>                 Address to bind. Default: 0.0.0.0
-  --port <port>                 HTTP port. Default: 3000
-  --no-ngrok                    Do not start ngrok; use LAN/local links
-  --ngrok-bin <path>            ngrok executable. Default: ngrok
-  --ngrok-api-url <url>         Local ngrok API. Default: http://127.0.0.1:4040
-  --ngrok-url <url>             Optional reserved ngrok URL/domain
-  --ngrok-timeout <seconds>     Time to wait for tunnel URL. Default: 20
-  --session-minutes <minutes>   Public viewer link lifetime. Default: 10
-  --pi-key <key>                Shared key required by the Raspberry Pi client
-  --dashboard-token <token>     Token required for the control dashboard
+  --host <host>                    Address to bind. Default: 0.0.0.0
+  --port <port>                    HTTP port. Default: 3000
+  --public-base-url <url>          Stable URL used inside per-Pi QR codes
+  --no-ngrok                       LAN/local testing; session links do not start ngrok
+  --ngrok-bin <path>               ngrok executable. Default: ngrok
+  --ngrok-timeout <seconds>        Time to wait for a new tunnel. Default: 20
+  --ngrok-api-start-port <port>    First local ngrok API port. Default: 4040
+  --session-minutes <minutes>      Viewer session lifetime. Default: 10
+  --pi-key <key>                   Shared key required by Pi scripts
+  --dashboard-token <token>        Admin dashboard token
 `);
 }
 
@@ -92,7 +100,7 @@ class WebSocketPeer extends EventEmitter {
     this.socket = socket;
     this.buffer = Buffer.alloc(0);
     this.open = true;
-    this.sendLock = Promise.resolve();
+    this.sendQueue = Promise.resolve();
 
     socket.on("data", (chunk) => this.read(chunk));
     socket.on("close", () => this.markClosed());
@@ -135,7 +143,7 @@ class WebSocketPeer extends EventEmitter {
         return;
       }
 
-      let mask;
+      let mask = null;
       if (masked) {
         if (this.buffer.length < offset + 4) return;
         mask = this.buffer.subarray(offset, offset + 4);
@@ -145,10 +153,10 @@ class WebSocketPeer extends EventEmitter {
       const end = offset + length;
       if (this.buffer.length < end) return;
 
-      let payload = Buffer.from(this.buffer.subarray(offset, end));
+      const payload = Buffer.from(this.buffer.subarray(offset, end));
       this.buffer = this.buffer.subarray(end);
 
-      if (masked && mask) {
+      if (mask) {
         for (let index = 0; index < payload.length; index += 1) {
           payload[index] ^= mask[index % 4];
         }
@@ -163,14 +171,9 @@ class WebSocketPeer extends EventEmitter {
         this.sendFrame(0x0a, payload);
         continue;
       }
-      if (opcode === 0x0a) {
-        continue;
-      }
-      if (opcode === 0x1) {
-        this.emit("message", payload.toString("utf8"), false);
-      } else if (opcode === 0x2) {
-        this.emit("message", payload, true);
-      }
+      if (opcode === 0x0a) continue;
+      if (opcode === 0x1) this.emit("message", payload.toString("utf8"), false);
+      else if (opcode === 0x2) this.emit("message", payload, true);
     }
   }
 
@@ -184,31 +187,28 @@ class WebSocketPeer extends EventEmitter {
 
   sendFrame(opcode, payload) {
     if (!this.open) return Promise.resolve(false);
-    const length = payload.length;
-    let header;
 
-    if (length <= 125) {
-      header = Buffer.from([0x80 | opcode, length]);
-    } else if (length <= 65535) {
+    let header;
+    if (payload.length <= 125) {
+      header = Buffer.from([0x80 | opcode, payload.length]);
+    } else if (payload.length <= 65535) {
       header = Buffer.alloc(4);
       header[0] = 0x80 | opcode;
       header[1] = 126;
-      header.writeUInt16BE(length, 2);
+      header.writeUInt16BE(payload.length, 2);
     } else {
       header = Buffer.alloc(10);
       header[0] = 0x80 | opcode;
       header[1] = 127;
       header.writeUInt32BE(0, 2);
-      header.writeUInt32BE(length, 6);
+      header.writeUInt32BE(payload.length, 6);
     }
 
     const frame = Buffer.concat([header, payload]);
-    this.sendLock = this.sendLock
-      .then(() => new Promise((resolve) => {
-        this.socket.write(frame, () => resolve(true));
-      }))
+    this.sendQueue = this.sendQueue
+      .then(() => new Promise((resolve) => this.socket.write(frame, () => resolve(true))))
       .catch(() => false);
-    return this.sendLock;
+    return this.sendQueue;
   }
 
   close(code = 1000, reason = "") {
@@ -231,8 +231,7 @@ class WebSocketPeer extends EventEmitter {
 function acceptWebSocket(req, socket) {
   const key = req.headers["sec-websocket-key"];
   if (!key) {
-    socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
-    socket.destroy();
+    rejectUpgrade(socket, 400, "Bad Request");
     return null;
   }
 
@@ -244,13 +243,30 @@ function acceptWebSocket(req, socket) {
     `Sec-WebSocket-Accept: ${accept}`,
     "\r\n",
   ].join("\r\n"));
-
   return new WebSocketPeer(socket);
 }
 
 function rejectUpgrade(socket, status, message) {
   socket.write(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\n\r\n`);
   socket.destroy();
+}
+
+function sanitizeDeviceId(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function parseCookies(header) {
@@ -264,7 +280,7 @@ function parseCookies(header) {
   return cookies;
 }
 
-function sendHtml(res, body, status = 200, headers = {}) {
+function sendHtml(res, status, body, headers = {}) {
   const payload = Buffer.from(body, "utf8");
   res.writeHead(status, {
     "Content-Type": "text/html; charset=utf-8",
@@ -294,211 +310,193 @@ function redirect(res, location, headers = {}) {
   res.end();
 }
 
-function notFound(res) {
-  sendHtml(res, "<!doctype html><title>Not found</title><h1>Not found</h1>", 404);
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
 function localLanIp() {
+  const fallback = [];
   for (const entries of Object.values(os.networkInterfaces())) {
     for (const entry of entries || []) {
-      if (entry.family === "IPv4" && !entry.internal) return entry.address;
+      if (entry.family !== "IPv4" || entry.internal || entry.address.startsWith("169.254.")) continue;
+      fallback.push(entry.address);
     }
   }
-  return "127.0.0.1";
+  for (const [name, entries] of Object.entries(os.networkInterfaces())) {
+    if (/virtual|vmware|vbox|docker|wsl|vethernet|loopback|hyper-v/i.test(name)) continue;
+    for (const entry of entries || []) {
+      if (entry.family === "IPv4" && !entry.internal && !entry.address.startsWith("169.254.")) return entry.address;
+    }
+  }
+  return fallback[0] || "127.0.0.1";
+}
+
+function httpGetJson(url) {
+  return new Promise((resolve, reject) => {
+    const transport = url.startsWith("https:") ? https : http;
+    const req = transport.get(url, { timeout: 2000 }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    req.on("error", reject);
+  });
 }
 
 function createApp(config) {
   const state = {
     startedAt: Date.now(),
-    localBaseUrl: `http://localhost:${config.port}`,
+    localBaseUrl: `http://127.0.0.1:${config.port}`,
     lanBaseUrl: `http://${localLanIp()}:${config.port}`,
-    pi: {
-      conn: null,
-      connected: false,
-      name: null,
-      remoteAddress: null,
-      connectedAt: null,
-      lastSeen: null,
-      camera: false,
-      streaming: false,
-      width: null,
-      height: null,
-      fps: 0,
-      frames: 0,
-      message: "",
-      lastError: "",
-    },
-    latestFrame: null,
-    frameSeq: 0,
-    fpsWindow: {
-      startedAt: Date.now(),
-      frames: 0,
-    },
-    sessions: new Map(),
-    activeToken: null,
-    viewers: new Map(),
-    dashboardPreviews: new Map(),
+    devices: new Map(),
     events: new Set(),
-    ngrok: {
-      enabled: !config.noNgrok,
-      process: null,
-      publicUrl: null,
-      running: false,
-      starting: false,
-      lastError: "",
-    },
-    lastStatePush: 0,
+    nextTunnelOffset: 0,
   };
 
-  function dashboardAuthorized(req, parsed) {
-    const token = parsed.searchParams.get("admin");
-    if (token && token === config.dashboardToken) return true;
-    const cookies = parseCookies(req.headers.cookie || "");
-    return cookies.cabcam_admin === config.dashboardToken;
+  function adminCookie() {
+    return `cabcam_admin=${encodeURIComponent(config.adminToken)}; Path=/; HttpOnly; SameSite=Lax`;
   }
 
-  function dashboardCookie() {
-    return `cabcam_admin=${encodeURIComponent(config.dashboardToken)}; Path=/; HttpOnly; SameSite=Lax`;
+  function adminAuthorized(req, parsed) {
+    if (parsed.searchParams.get("admin") === config.adminToken) return true;
+    return parseCookies(req.headers.cookie || "").cabcam_admin === config.adminToken;
   }
 
-  function publicBaseUrl() {
-    return state.ngrok.publicUrl || null;
+  function externalBaseUrl(req = null) {
+    if (config.publicBaseUrl) return config.publicBaseUrl;
+    if (req && req.headers.host) {
+      const proto = String(req.headers["x-forwarded-proto"] || "http").split(",", 1)[0].trim() || "http";
+      return `${proto}://${req.headers.host}`;
+    }
+    return state.lanBaseUrl;
   }
 
-  function activeSession() {
-    cleanupSessions();
-    if (!state.activeToken) return null;
-    return state.sessions.get(state.activeToken) || null;
+  function landingPath(deviceId) {
+    return `/d/${encodeURIComponent(deviceId)}`;
   }
 
-  function sessionPath(session) {
-    return `/view/${session.token}`;
+  function landingUrl(deviceId, req = null) {
+    return `${externalBaseUrl(req)}${landingPath(deviceId)}`;
   }
 
-  function publicState() {
-    const session = activeSession();
+  function qrPath(deviceId) {
+    return `/qr/${encodeURIComponent(deviceId)}.svg`;
+  }
+
+  function viewPath(deviceId, token) {
+    return `/view/${encodeURIComponent(deviceId)}/${encodeURIComponent(token)}`;
+  }
+
+  function getDevice(rawDeviceId, create = false) {
+    const deviceId = sanitizeDeviceId(rawDeviceId);
+    if (!deviceId) return null;
+    if (!state.devices.has(deviceId) && create) {
+      state.devices.set(deviceId, {
+        id: deviceId,
+        name: deviceId,
+        conn: null,
+        connected: false,
+        remoteAddress: "",
+        connectedAt: null,
+        lastSeen: null,
+        camera: false,
+        streaming: false,
+        width: null,
+        height: null,
+        fps: 0,
+        frames: 0,
+        frameSeq: 0,
+        fpsWindowStartedAt: Date.now(),
+        fpsWindowFrames: 0,
+        latestFrame: null,
+        message: "",
+        lastError: "",
+        activeSession: null,
+        viewers: new Map(),
+        previews: new Map(),
+      });
+    }
+    return state.devices.get(deviceId) || null;
+  }
+
+  function deviceSummary(device, req = null) {
+    cleanupDeviceSession(device);
+    const session = device.activeSession;
+    return {
+      id: device.id,
+      name: device.name,
+      connected: device.connected,
+      remoteAddress: device.remoteAddress,
+      connectedAt: device.connectedAt,
+      lastSeen: device.lastSeen,
+      camera: device.camera,
+      streaming: device.streaming,
+      width: device.width,
+      height: device.height,
+      fps: device.fps,
+      frames: device.frames,
+      frameSeq: device.frameSeq,
+      message: device.message,
+      lastError: device.lastError,
+      landingUrl: landingUrl(device.id, req),
+      qrUrl: `${externalBaseUrl(req)}${qrPath(device.id)}`,
+      viewers: device.viewers.size,
+      session: session ? {
+        active: true,
+        token: session.token,
+        createdAt: session.createdAt,
+        expiresAt: session.expiresAt,
+        remainingSeconds: Math.max(0, Math.ceil((session.expiresAt - Date.now()) / 1000)),
+        tunnelUrl: session.tunnel ? session.tunnel.publicUrl : null,
+        viewerUrl: session.viewerUrl || null,
+        tunnelStarting: Boolean(session.tunnelStarting),
+        tunnelError: session.tunnelError || "",
+      } : {
+        active: false,
+        token: null,
+        createdAt: null,
+        expiresAt: null,
+        remainingSeconds: 0,
+        tunnelUrl: null,
+        viewerUrl: null,
+        tunnelStarting: false,
+        tunnelError: "",
+      },
+    };
+  }
+
+  function allState(req = null) {
     return {
       uptimeSeconds: Math.floor((Date.now() - state.startedAt) / 1000),
       localBaseUrl: state.localBaseUrl,
       lanBaseUrl: state.lanBaseUrl,
-      publicBaseUrl: publicBaseUrl(),
-      pi: {
-        connected: state.pi.connected,
-        name: state.pi.name,
-        remoteAddress: state.pi.remoteAddress,
-        connectedAt: state.pi.connectedAt,
-        lastSeen: state.pi.lastSeen,
-        camera: state.pi.camera,
-        streaming: state.pi.streaming,
-        width: state.pi.width,
-        height: state.pi.height,
-        fps: state.pi.fps,
-        frames: state.pi.frames,
-        message: state.pi.message,
-        lastError: state.pi.lastError,
-      },
-      ngrok: {
-        enabled: state.ngrok.enabled,
-        running: state.ngrok.running,
-        starting: state.ngrok.starting,
-        publicUrl: state.ngrok.publicUrl,
-        lastError: state.ngrok.lastError,
-      },
-      session: session ? {
-        active: true,
-        token: session.token,
-        path: sessionPath(session),
-        createdAt: session.createdAt,
-        expiresAt: session.expiresAt,
-        remainingSeconds: Math.max(0, Math.ceil((session.expiresAt - Date.now()) / 1000)),
-      } : {
-        active: false,
-        token: null,
-        path: null,
-        createdAt: null,
-        expiresAt: null,
-        remainingSeconds: 0,
-      },
-      viewers: state.viewers.size,
-      dashboardPreviews: state.dashboardPreviews.size,
-      frameSeq: state.frameSeq,
+      publicBaseUrl: config.publicBaseUrl || null,
+      ngrokEnabled: !config.noNgrok,
+      devices: Array.from(state.devices.values()).map((device) => deviceSummary(device, req)),
     };
   }
 
-  function pushState(force = false) {
-    const now = Date.now();
-    if (!force && now - state.lastStatePush < 300) return;
-    state.lastStatePush = now;
-    const line = `data: ${JSON.stringify(publicState())}\n\n`;
+  function pushState() {
+    const payload = `data: ${JSON.stringify(allState())}\n\n`;
     for (const res of Array.from(state.events)) {
       try {
-        res.write(line);
+        res.write(payload);
       } catch (_error) {
         state.events.delete(res);
       }
     }
   }
 
-  function cleanupSessions() {
-    const now = Date.now();
-    for (const [token, session] of state.sessions) {
-      if (session.expiresAt <= now) {
-        state.sessions.delete(token);
-        if (state.activeToken === token) state.activeToken = null;
-      }
-    }
-    for (const [id, viewer] of Array.from(state.viewers)) {
-      if (!state.sessions.has(viewer.token)) {
-        viewer.conn.close(1000, "Session expired");
-        state.viewers.delete(id);
-      }
-    }
-  }
-
-  function createSession() {
-    const token = crypto.randomBytes(18).toString("base64url");
-    const now = Date.now();
-    const session = {
-      token,
-      createdAt: now,
-      expiresAt: now + config.sessionMinutes * 60 * 1000,
-    };
-
-    for (const viewer of state.viewers.values()) {
-      viewer.conn.close(1000, "Replaced by a new link");
-    }
-    state.viewers.clear();
-    state.sessions.clear();
-    state.sessions.set(token, session);
-    state.activeToken = token;
-    pushState(true);
-    return session;
-  }
-
-  function endSession() {
-    for (const viewer of state.viewers.values()) {
-      viewer.conn.close(1000, "Session ended");
-    }
-    state.viewers.clear();
-    state.sessions.clear();
-    state.activeToken = null;
-    pushState(true);
-  }
-
-  function sendPiCommand(action) {
-    if (!state.pi.conn || !state.pi.connected) {
-      return false;
-    }
-    state.pi.conn.sendText(JSON.stringify({
+  function sendPiCommand(device, action) {
+    if (!device.conn || !device.connected) return false;
+    device.conn.sendText(JSON.stringify({
       type: "command",
       id: crypto.randomBytes(9).toString("base64url"),
       action,
@@ -507,183 +505,360 @@ function createApp(config) {
     return true;
   }
 
-  function handlePiText(text) {
+  function receiveFrame(device, frame) {
+    device.latestFrame = Buffer.from(frame);
+    device.frameSeq += 1;
+    device.frames += 1;
+    device.lastSeen = new Date().toISOString();
+    device.connected = true;
+    device.fpsWindowFrames += 1;
+
+    const now = Date.now();
+    const elapsed = now - device.fpsWindowStartedAt;
+    if (elapsed >= 1000) {
+      device.fps = Math.round((device.fpsWindowFrames * 1000 / elapsed) * 10) / 10;
+      device.fpsWindowStartedAt = now;
+      device.fpsWindowFrames = 0;
+      pushState();
+    }
+
+    cleanupDeviceSession(device);
+    for (const [id, viewer] of Array.from(device.viewers)) {
+      if (!device.activeSession || viewer.token !== device.activeSession.token) {
+        viewer.conn.close(1000, "Session ended");
+        device.viewers.delete(id);
+        continue;
+      }
+      viewer.conn.sendBinary(frame).catch(() => device.viewers.delete(id));
+    }
+
+    for (const [id, preview] of Array.from(device.previews)) {
+      preview.sendBinary(frame).catch(() => device.previews.delete(id));
+    }
+  }
+
+  function handlePiText(device, text) {
     let message;
     try {
       message = JSON.parse(text);
     } catch (_error) {
-      state.pi.message = text.slice(0, 200);
+      device.message = text.slice(0, 200);
       pushState();
       return;
     }
 
-    state.pi.lastSeen = new Date().toISOString();
+    device.lastSeen = new Date().toISOString();
     if (message.type === "hello") {
-      state.pi.name = message.name || state.pi.name;
-      state.pi.message = "Pi connected";
+      device.name = message.name || device.name;
+      device.message = "Pi connected";
     } else if (message.type === "status") {
-      state.pi.name = message.name || state.pi.name;
-      state.pi.camera = Boolean(message.camera);
-      state.pi.streaming = Boolean(message.streaming);
-      state.pi.width = message.width || state.pi.width;
-      state.pi.height = message.height || state.pi.height;
-      state.pi.frames = Number(message.frames || state.pi.frames || 0);
-      state.pi.message = message.message || "";
-      if (message.error) state.pi.lastError = message.error;
+      device.name = message.name || device.name;
+      device.camera = Boolean(message.camera);
+      device.streaming = Boolean(message.streaming);
+      device.width = message.width || device.width;
+      device.height = message.height || device.height;
+      device.frames = Number(message.frames || device.frames || 0);
+      device.message = message.message || "";
+      if (message.error) device.lastError = message.error;
     } else if (message.type === "error") {
-      state.pi.lastError = message.error || message.message || "Unknown Pi error";
-      state.pi.message = "Pi error";
-    } else {
-      state.pi.message = message.message || message.type || "";
+      device.lastError = message.error || message.message || "Pi error";
+      device.message = "Pi error";
     }
-    pushState(true);
+    pushState();
   }
 
-  function receiveFrame(frame) {
-    state.latestFrame = Buffer.from(frame);
-    state.frameSeq += 1;
-    state.pi.frames += 1;
-    state.pi.connected = true;
-    state.pi.lastSeen = new Date().toISOString();
-
-    state.fpsWindow.frames += 1;
-    const now = Date.now();
-    const elapsed = now - state.fpsWindow.startedAt;
-    if (elapsed >= 1000) {
-      state.pi.fps = Math.round((state.fpsWindow.frames * 1000 / elapsed) * 10) / 10;
-      state.fpsWindow.frames = 0;
-      state.fpsWindow.startedAt = now;
-      pushState();
+  function registerPi(req, peer, parsed) {
+    const rawDeviceId = parsed.searchParams.get("device")
+      || parsed.searchParams.get("device_id")
+      || parsed.searchParams.get("name")
+      || "pi";
+    const device = getDevice(rawDeviceId, true);
+    if (!device) {
+      peer.close(1008, "Invalid device id");
+      return;
     }
 
-    cleanupSessions();
-    for (const [id, viewer] of Array.from(state.viewers)) {
-      if (!state.sessions.has(viewer.token)) {
-        viewer.conn.close(1000, "Session expired");
-        state.viewers.delete(id);
-        continue;
-      }
-      viewer.conn.sendBinary(frame).catch(() => {
-        state.viewers.delete(id);
-      });
+    if (device.conn && device.conn !== peer) {
+      device.conn.close(1000, "Replaced by a new connection for this device");
     }
 
-    for (const [id, preview] of Array.from(state.dashboardPreviews)) {
-      preview.sendBinary(frame).catch(() => {
-        state.dashboardPreviews.delete(id);
-      });
-    }
-  }
+    device.conn = peer;
+    device.connected = true;
+    device.name = parsed.searchParams.get("name") || device.name;
+    device.remoteAddress = req.socket.remoteAddress || "";
+    device.connectedAt = new Date().toISOString();
+    device.lastSeen = device.connectedAt;
+    device.message = "Pi connected";
+    device.lastError = "";
 
-  function registerPi(req, peer) {
-    if (state.pi.conn && state.pi.conn !== peer) {
-      state.pi.conn.close(1000, "Replaced by a new Pi connection");
-    }
-    const parsed = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-    state.pi.conn = peer;
-    state.pi.connected = true;
-    state.pi.name = parsed.searchParams.get("name") || state.pi.name || "raspberry-pi";
-    state.pi.remoteAddress = req.socket.remoteAddress;
-    state.pi.connectedAt = new Date().toISOString();
-    state.pi.lastSeen = state.pi.connectedAt;
-    state.pi.message = "Pi connected";
-    state.pi.lastError = "";
-    peer.sendText(JSON.stringify({ type: "hello", at: new Date().toISOString() }));
-    pushState(true);
+    peer.sendText(JSON.stringify({
+      type: "hello",
+      device_id: device.id,
+      device_url: landingUrl(device.id),
+      qr_url: `${externalBaseUrl()}${qrPath(device.id)}`,
+      at: new Date().toISOString(),
+    }));
+    pushState();
 
     peer.on("message", (payload, binary) => {
-      if (binary) receiveFrame(payload);
-      else handlePiText(payload);
+      if (binary) receiveFrame(device, payload);
+      else handlePiText(device, payload);
     });
     peer.on("close", () => {
-      if (state.pi.conn === peer) {
-        state.pi.conn = null;
-        state.pi.connected = false;
-        state.pi.camera = false;
-        state.pi.streaming = false;
-        state.pi.message = "Pi disconnected";
-        pushState(true);
+      if (device.conn === peer) {
+        device.conn = null;
+        device.connected = false;
+        device.camera = false;
+        device.streaming = false;
+        device.message = "Pi disconnected";
+        pushState();
       }
     });
   }
 
-  function registerViewer(token, peer) {
-    cleanupSessions();
-    const session = state.sessions.get(token);
-    if (!session) {
+  function registerViewer(device, token, peer) {
+    cleanupDeviceSession(device);
+    if (!device.activeSession || device.activeSession.token !== token) {
       peer.close(1008, "Invalid session");
       return;
     }
 
     const id = crypto.randomUUID();
-    state.viewers.set(id, { token, conn: peer, connectedAt: Date.now() });
-    if (state.latestFrame) {
-      peer.sendBinary(state.latestFrame);
-    }
+    device.viewers.set(id, { token, conn: peer, connectedAt: Date.now() });
+    if (device.latestFrame) peer.sendBinary(device.latestFrame);
     peer.on("close", () => {
-      state.viewers.delete(id);
+      device.viewers.delete(id);
       pushState();
     });
-    pushState(true);
+    pushState();
   }
 
-  function registerDashboardPreview(peer) {
+  function registerPreview(device, peer) {
     const id = crypto.randomUUID();
-    state.dashboardPreviews.set(id, peer);
-    if (state.latestFrame) {
-      peer.sendBinary(state.latestFrame);
-    }
+    device.previews.set(id, peer);
+    if (device.latestFrame) peer.sendBinary(device.latestFrame);
     peer.on("close", () => {
-      state.dashboardPreviews.delete(id);
+      device.previews.delete(id);
       pushState();
     });
-    pushState(true);
+    pushState();
   }
 
-  function handleEvents(req, res) {
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
+  function createSession(device) {
+    cleanupDeviceSession(device);
+    stopSession(device);
+
+    const token = crypto.randomBytes(18).toString("base64url");
+    const now = Date.now();
+    device.activeSession = {
+      token,
+      createdAt: now,
+      expiresAt: now + config.sessionMinutes * 60 * 1000,
+      viewerUrl: null,
+      tunnel: null,
+      tunnelStarting: false,
+      tunnelError: "",
+    };
+    pushState();
+    return device.activeSession;
+  }
+
+  function stopSession(device) {
+    if (!device.activeSession) return;
+    const session = device.activeSession;
+    for (const viewer of device.viewers.values()) {
+      viewer.conn.close(1000, "Session ended");
+    }
+    device.viewers.clear();
+    if (session.tunnel && session.tunnel.process && !session.tunnel.process.killed) {
+      session.tunnel.process.kill();
+    }
+    device.activeSession = null;
+    pushState();
+  }
+
+  function cleanupDeviceSession(device) {
+    if (!device.activeSession) return;
+    if (device.activeSession.expiresAt > Date.now()) return;
+    stopSession(device);
+  }
+
+  function cleanupAllSessions() {
+    for (const device of state.devices.values()) cleanupDeviceSession(device);
+  }
+
+  function ngrokTarget() {
+    const targetHost = config.host === "0.0.0.0" || config.host === "::" || config.host === ""
+      ? "127.0.0.1"
+      : config.host;
+    return `http://${targetHost}:${config.port}`;
+  }
+
+  async function waitForNgrokUrl(apiPort) {
+    const deadline = Date.now() + config.ngrokTimeoutMs;
+    const apiUrl = `http://127.0.0.1:${apiPort}/api/tunnels`;
+    let lastError = "ngrok API was not ready";
+
+    while (Date.now() < deadline) {
+      try {
+        const payload = await httpGetJson(apiUrl);
+        const publicUrls = [];
+        for (const tunnel of payload.tunnels || []) {
+          if (tunnel.public_url) publicUrls.push(String(tunnel.public_url).replace(/\/$/, ""));
+        }
+        const httpsUrl = publicUrls.find((url) => url.startsWith("https://"));
+        if (httpsUrl) return httpsUrl;
+        if (publicUrls.length > 0) return publicUrls[0];
+        lastError = "ngrok API returned no public URL";
+      } catch (error) {
+        lastError = error.message;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`Timed out waiting for ngrok URL. Last error: ${lastError}`);
+  }
+
+  async function startTunnelForSession(device, session) {
+    if (config.noNgrok) {
+      session.viewerUrl = `${externalBaseUrl()}${viewPath(device.id, session.token)}`;
+      pushState();
+      return session.viewerUrl;
+    }
+
+    const apiPort = config.ngrokApiStartPort + state.nextTunnelOffset;
+    state.nextTunnelOffset += 1;
+    session.tunnelStarting = true;
+    session.tunnelError = "";
+    pushState();
+
+    const args = [
+      "http",
+      ngrokTarget(),
+      "--log=stdout",
+      `--web-addr=127.0.0.1:${apiPort}`,
+    ];
+
+    const proc = childProcess.spawn(config.ngrokBin, args, {
+      stdio: ["ignore", "ignore", "pipe"],
     });
-    res.write(`data: ${JSON.stringify(publicState())}\n\n`);
-    state.events.add(res);
-    req.on("close", () => {
-      state.events.delete(res);
+
+    const tunnel = {
+      process: proc,
+      apiPort,
+      publicUrl: null,
+    };
+    session.tunnel = tunnel;
+
+    proc.stderr.on("data", (chunk) => {
+      const line = chunk.toString("utf8").trim();
+      if (line) {
+        session.tunnelError = line.slice(0, 500);
+        pushState();
+      }
     });
+    proc.on("error", (error) => {
+      session.tunnelStarting = false;
+      session.tunnelError = error.message;
+      pushState();
+    });
+    proc.on("exit", (code, signal) => {
+      if (device.activeSession === session) {
+        if (code !== 0 && signal !== "SIGTERM") {
+          session.tunnelError = `ngrok exited with code ${code}`;
+        }
+        if (!session.viewerUrl) session.tunnelStarting = false;
+        pushState();
+      }
+    });
+
+    try {
+      const publicUrl = await waitForNgrokUrl(apiPort);
+      tunnel.publicUrl = publicUrl;
+      session.viewerUrl = `${publicUrl}${viewPath(device.id, session.token)}`;
+      session.tunnelStarting = false;
+      pushState();
+      console.log(`ngrok session for ${device.id}: ${session.viewerUrl}`);
+      return session.viewerUrl;
+    } catch (error) {
+      proc.kill();
+      session.tunnelStarting = false;
+      session.tunnelError = error.message;
+      pushState();
+      throw error;
+    }
+  }
+
+  async function startUserSession(device) {
+    if (!device.connected) {
+      throw new Error("This Pi is not connected to the Node server.");
+    }
+    const session = createSession(device);
+    return startTunnelForSession(device, session);
+  }
+
+  function deviceFromPath(parts, index) {
+    return getDevice(decodeURIComponent(parts[index] || ""), false);
   }
 
   async function handleHttp(req, res) {
     const parsed = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-    const authorized = dashboardAuthorized(req, parsed);
-    const authHeaders = parsed.searchParams.get("admin") === config.dashboardToken
-      ? { "Set-Cookie": dashboardCookie() }
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const authed = adminAuthorized(req, parsed);
+    const authHeaders = parsed.searchParams.get("admin") === config.adminToken
+      ? { "Set-Cookie": adminCookie() }
       : {};
 
-    if (req.method === "GET" && (parsed.pathname === "/" || parsed.pathname === "/dashboard")) {
-      if (!authorized) {
-        sendHtml(res, lockedPage(), 401);
+    if (req.method === "GET" && (parsed.pathname === "/" || parsed.pathname === "/admin")) {
+      if (!authed) {
+        sendHtml(res, 401, lockedPage());
         return;
       }
-      sendHtml(res, dashboardPage(), 200, authHeaders);
+      sendHtml(res, 200, adminPage(), authHeaders);
       return;
     }
 
     if (req.method === "GET" && parsed.pathname === "/events") {
-      if (!authorized) {
+      if (!authed) {
         sendJson(res, 401, { error: "Unauthorized" });
         return;
       }
-      handleEvents(req, res);
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+      res.write(`data: ${JSON.stringify(allState(req))}\n\n`);
+      state.events.add(res);
+      req.on("close", () => state.events.delete(res));
       return;
     }
 
-    if (req.method === "GET" && parsed.pathname === "/status.json") {
-      if (!authorized) {
+    if (req.method === "GET" && parsed.pathname === "/api/devices") {
+      if (!authed) {
         sendJson(res, 401, { error: "Unauthorized" });
         return;
       }
-      sendJson(res, 200, publicState());
+      sendJson(res, 200, allState(req));
+      return;
+    }
+
+    if (req.method === "GET" && parsed.pathname === "/api/pi/config") {
+      const key = parsed.searchParams.get("key") || "";
+      if (key !== config.piKey) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+      const device = getDevice(parsed.searchParams.get("device") || parsed.searchParams.get("device_id"), true);
+      if (!device) {
+        sendJson(res, 400, { error: "Invalid device id" });
+        return;
+      }
+      sendJson(res, 200, {
+        device_id: device.id,
+        ws_url: `${externalBaseUrl(req).replace(/^http/, "ws")}/api/pi/ws`,
+        device_url: landingUrl(device.id, req),
+        qr_url: `${externalBaseUrl(req)}${qrPath(device.id)}`,
+      });
       return;
     }
 
@@ -693,740 +868,682 @@ function createApp(config) {
       return;
     }
 
-    if (req.method === "POST" && parsed.pathname === "/api/pi/start") {
-      if (!authorized) return sendJson(res, 401, { error: "Unauthorized" });
-      if (!sendPiCommand("start_camera")) return sendJson(res, 409, { error: "Pi is not connected" });
-      return sendJson(res, 200, { ok: true });
-    }
-
-    if (req.method === "POST" && parsed.pathname === "/api/pi/stop") {
-      if (!authorized) return sendJson(res, 401, { error: "Unauthorized" });
-      if (!sendPiCommand("stop_camera")) return sendJson(res, 409, { error: "Pi is not connected" });
-      return sendJson(res, 200, { ok: true });
-    }
-
-    if (req.method === "POST" && parsed.pathname === "/api/pi/restart") {
-      if (!authorized) return sendJson(res, 401, { error: "Unauthorized" });
-      if (!sendPiCommand("restart_camera")) return sendJson(res, 409, { error: "Pi is not connected" });
-      return sendJson(res, 200, { ok: true });
-    }
-
-    if (req.method === "POST" && parsed.pathname === "/api/sessions") {
-      if (!authorized) return sendJson(res, 401, { error: "Unauthorized" });
-      const session = createSession();
-      return sendJson(res, 200, {
-        ok: true,
-        path: sessionPath(session),
-        publicBaseUrl: publicBaseUrl(),
-        expiresAt: session.expiresAt,
-      });
-    }
-
-    if (req.method === "POST" && parsed.pathname === "/api/sessions/end") {
-      if (!authorized) return sendJson(res, 401, { error: "Unauthorized" });
-      endSession();
-      return sendJson(res, 200, { ok: true });
-    }
-
-    if (req.method === "POST" && parsed.pathname === "/api/ngrok/restart") {
-      if (!authorized) return sendJson(res, 401, { error: "Unauthorized" });
-      if (config.noNgrok) return sendJson(res, 409, { error: "ngrok is disabled" });
-      try {
-        await restartNgrok();
-        return sendJson(res, 200, { ok: true, publicUrl: state.ngrok.publicUrl });
-      } catch (error) {
-        return sendJson(res, 500, { error: error.message });
-      }
-    }
-
-    if (req.method === "GET" && parsed.pathname.startsWith("/view/")) {
-      const token = parsed.pathname.split("/").filter(Boolean)[1] || "";
-      cleanupSessions();
-      const session = state.sessions.get(token);
-      if (!session) {
-        sendHtml(res, expiredPage(), 404);
+    if (req.method === "GET" && parts[0] === "qr" && parts[1]) {
+      const deviceId = sanitizeDeviceId(parts[1].replace(/\.svg$/i, ""));
+      if (!deviceId) {
+        sendJson(res, 400, { error: "Invalid device id" });
         return;
       }
-      sendHtml(res, viewerPage(token, session), 200);
+      await sendQrSvg(res, landingUrl(deviceId, req));
       return;
     }
 
-    if (req.method === "GET" && parsed.pathname.startsWith("/snapshot/")) {
-      const token = parsed.pathname.split("/").filter(Boolean)[1] || "";
-      cleanupSessions();
-      if (!state.sessions.has(token)) {
+    if (req.method === "GET" && parts[0] === "d" && parts[1]) {
+      const deviceId = sanitizeDeviceId(decodeURIComponent(parts[1]));
+      const device = getDevice(deviceId, false);
+      sendHtml(res, 200, userLandingPage(deviceId, device, req));
+      return;
+    }
+
+    if (req.method === "POST" && parts[0] === "d" && parts[1] && parts[2] === "session") {
+      const device = deviceFromPath(parts, 1);
+      if (!device) {
+        sendHtml(res, 404, userMessagePage("Device not found", "This QR code does not match a registered Pi."));
+        return;
+      }
+      try {
+        const viewerUrl = await startUserSession(device);
+        redirect(res, viewerUrl);
+      } catch (error) {
+        sendHtml(res, 503, userMessagePage("Session could not start", error.message));
+      }
+      return;
+    }
+
+    if (req.method === "GET" && parts[0] === "view" && parts[1] && parts[2]) {
+      const device = deviceFromPath(parts, 1);
+      const token = decodeURIComponent(parts[2]);
+      cleanupDeviceSession(device || {});
+      if (!device || !device.activeSession || device.activeSession.token !== token) {
+        sendHtml(res, 404, userMessagePage("Session expired", "Start a new session from the Pi QR page."));
+        return;
+      }
+      sendHtml(res, 200, viewerPage(device, token));
+      return;
+    }
+
+    if (req.method === "GET" && parts[0] === "snapshot" && parts[1] && parts[2]) {
+      const device = deviceFromPath(parts, 1);
+      const token = decodeURIComponent(parts[2]);
+      cleanupDeviceSession(device || {});
+      if (!device || !device.activeSession || device.activeSession.token !== token) {
         sendJson(res, 404, { error: "Session expired" });
         return;
       }
-      if (!state.latestFrame) {
+      if (!device.latestFrame) {
         sendJson(res, 503, { error: "No frame from Pi yet" });
         return;
       }
       res.writeHead(200, {
         "Content-Type": "image/jpeg",
-        "Content-Length": state.latestFrame.length,
+        "Content-Length": device.latestFrame.length,
         "Cache-Control": "no-store",
       });
-      res.end(state.latestFrame);
+      res.end(device.latestFrame);
       return;
     }
 
-    notFound(res);
+    if (req.method === "POST" && parts[0] === "api" && parts[1] === "devices" && parts[2] && parts[3] === "commands" && parts[4]) {
+      if (!authed) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+      const device = deviceFromPath(parts, 2);
+      const actions = new Set(["start_camera", "stop_camera", "restart_camera", "status"]);
+      const action = parts[4];
+      if (!device || !actions.has(action)) {
+        sendJson(res, 404, { error: "Device or command not found" });
+        return;
+      }
+      if (!sendPiCommand(device, action)) {
+        sendJson(res, 409, { error: "Pi is not connected" });
+        return;
+      }
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === "POST" && parts[0] === "api" && parts[1] === "devices" && parts[2] && parts[3] === "session" && parts[4] === "end") {
+      if (!authed) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+      const device = deviceFromPath(parts, 2);
+      if (!device) {
+        sendJson(res, 404, { error: "Device not found" });
+        return;
+      }
+      stopSession(device);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    sendHtml(res, 404, userMessagePage("Not found", "The requested page does not exist."));
   }
 
   function handleUpgrade(req, socket) {
     const parsed = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    const parts = parsed.pathname.split("/").filter(Boolean);
 
-    if (parsed.pathname === "/ws/pi") {
+    if (parsed.pathname === "/api/pi/ws" || parsed.pathname === "/ws/pi") {
       const key = parsed.searchParams.get("key") || req.headers["x-pi-key"] || "";
       if (key !== config.piKey) {
         rejectUpgrade(socket, 401, "Unauthorized");
         return;
       }
       const peer = acceptWebSocket(req, socket);
-      if (peer) registerPi(req, peer);
+      if (peer) registerPi(req, peer, parsed);
       return;
     }
 
-    if (parsed.pathname.startsWith("/ws/view/")) {
-      const token = parsed.pathname.split("/").filter(Boolean)[2] || "";
-      cleanupSessions();
-      if (!state.sessions.has(token)) {
+    if (parts[0] === "ws" && parts[1] === "view" && parts[2] && parts[3]) {
+      const device = deviceFromPath(parts, 2);
+      const token = decodeURIComponent(parts[3]);
+      if (!device || !device.activeSession || device.activeSession.token !== token) {
         rejectUpgrade(socket, 404, "Session expired");
         return;
       }
       const peer = acceptWebSocket(req, socket);
-      if (peer) registerViewer(token, peer);
+      if (peer) registerViewer(device, token, peer);
       return;
     }
 
-    if (parsed.pathname === "/ws/dashboard-preview") {
-      if (!dashboardAuthorized(req, parsed)) {
+    if (parts[0] === "ws" && parts[1] === "preview" && parts[2]) {
+      if (!adminAuthorized(req, parsed)) {
         rejectUpgrade(socket, 401, "Unauthorized");
         return;
       }
+      const device = deviceFromPath(parts, 2);
+      if (!device) {
+        rejectUpgrade(socket, 404, "Device not found");
+        return;
+      }
       const peer = acceptWebSocket(req, socket);
-      if (peer) registerDashboardPreview(peer);
+      if (peer) registerPreview(device, peer);
       return;
     }
 
     rejectUpgrade(socket, 404, "Not Found");
   }
 
-  function localNgrokTarget() {
-    const targetHost = config.host === "0.0.0.0" || config.host === "::" || config.host === ""
-      ? "127.0.0.1"
-      : config.host;
-    return `http://${targetHost}:${config.port}`;
-  }
-
-  function tunnelMatchesPort(tunnel) {
-    const addr = String((tunnel.config && tunnel.config.addr) || "");
-    return addr === String(config.port)
-      || addr.endsWith(`:${config.port}`)
-      || addr.includes(`:${config.port}/`);
-  }
-
-  function getJson(url) {
-    return new Promise((resolve, reject) => {
-      const transport = url.startsWith("https:") ? https : http;
-      const req = transport.get(url, { timeout: 2000 }, (res) => {
-        const chunks = [];
-        res.on("data", (chunk) => chunks.push(chunk));
-        res.on("end", () => {
-          if (res.statusCode < 200 || res.statusCode >= 300) {
-            reject(new Error(`HTTP ${res.statusCode}`));
-            return;
-          }
-          try {
-            resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-          } catch (error) {
-            reject(error);
-          }
-        });
-      });
-      req.on("timeout", () => req.destroy(new Error("timeout")));
-      req.on("error", reject);
-    });
-  }
-
-  async function waitForNgrokUrl() {
-    const deadline = Date.now() + config.ngrokTimeout;
-    const tunnelsUrl = `${config.ngrokApiUrl.replace(/\/$/, "")}/api/tunnels`;
-    let lastError = "ngrok API was not ready";
-
-    while (Date.now() < deadline) {
-      try {
-        const payload = await getJson(tunnelsUrl);
-        const publicUrls = [];
-        for (const tunnel of payload.tunnels || []) {
-          if (tunnel.public_url && tunnelMatchesPort(tunnel)) {
-            publicUrls.push(String(tunnel.public_url).replace(/\/$/, ""));
-          }
-        }
-        const httpsUrl = publicUrls.find((url) => url.startsWith("https://"));
-        if (httpsUrl) return httpsUrl;
-        if (publicUrls.length > 0) return publicUrls[0];
-        lastError = `ngrok API returned no tunnel for local port ${config.port}`;
-      } catch (error) {
-        lastError = error.message;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    throw new Error(`Timed out waiting for ngrok public URL. Last error: ${lastError}`);
-  }
-
-  async function startNgrok() {
-    if (config.noNgrok) return null;
-    if (state.ngrok.process) return state.ngrok.publicUrl;
-
-    state.ngrok.starting = true;
-    state.ngrok.running = false;
-    state.ngrok.lastError = "";
-    pushState(true);
-
-    const args = ["http", localNgrokTarget(), "--log=stdout"];
-    if (config.ngrokUrl) {
-      args.push("--url", config.ngrokUrl);
-    }
-
-    const proc = childProcess.spawn(config.ngrokBin, args, {
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-
-    state.ngrok.process = proc;
-    proc.stderr.on("data", (chunk) => {
-      const line = chunk.toString("utf8").trim();
-      if (line) state.ngrok.lastError = line.slice(0, 500);
-    });
-    proc.on("error", (error) => {
-      state.ngrok.lastError = error.message;
-      state.ngrok.process = null;
-      state.ngrok.running = false;
-      state.ngrok.starting = false;
-      pushState(true);
-    });
-    proc.on("exit", (code, signal) => {
-      if (state.ngrok.process === proc) {
-        state.ngrok.process = null;
-        state.ngrok.running = false;
-        state.ngrok.starting = false;
-        if (code !== 0 && signal !== "SIGTERM") {
-          state.ngrok.lastError = `ngrok exited with code ${code}`;
-        }
-        pushState(true);
-      }
-    });
-
-    try {
-      const publicUrl = await waitForNgrokUrl();
-      state.ngrok.publicUrl = publicUrl;
-      state.ngrok.running = true;
-      state.ngrok.starting = false;
-      pushState(true);
-      console.log(`ngrok: ${publicUrl} -> ${localNgrokTarget()}`);
-      return publicUrl;
-    } catch (error) {
-      stopNgrok();
-      state.ngrok.lastError = error.message;
-      state.ngrok.starting = false;
-      pushState(true);
-      throw error;
-    }
-  }
-
-  function stopNgrok() {
-    if (!state.ngrok.process) return;
-    const proc = state.ngrok.process;
-    state.ngrok.process = null;
-    state.ngrok.running = false;
-    state.ngrok.starting = false;
-    state.ngrok.publicUrl = null;
-    proc.kill();
-    pushState(true);
-  }
-
-  async function restartNgrok() {
-    stopNgrok();
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    return startNgrok();
-  }
-
   function lockedPage() {
-    return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cab Cam</title>
-  <style>
-    :root { font-family: Arial, Helvetica, sans-serif; background: #f6f7f4; color: #1d1f20; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; }
-    main { width: min(100%, 420px); border: 1px solid #c9cdc6; border-radius: 8px; padding: 20px; background: #fff; }
-    code { overflow-wrap: anywhere; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Dashboard locked</h1>
-    <p>Open the dashboard URL printed by the Node server.</p>
-  </main>
-</body>
-</html>`;
+    return pageShell("Dashboard locked", `<section class="panel"><h1>Dashboard locked</h1><p>Open the dashboard URL printed by the Node server.</p></section>`);
   }
 
-  function dashboardPage() {
+  function adminPage() {
+    return pageShell("Cab Cam Control", `
+<header><h1>Cab Cam Control</h1><span id="summary">No Pi connected</span></header>
+<main>
+  <section class="panel">
+    <dl>
+      <dt>LAN base</dt><dd id="lanBase">-</dd>
+      <dt>QR base</dt><dd id="qrBase">-</dd>
+      <dt>ngrok</dt><dd id="ngrokMode">-</dd>
+    </dl>
+  </section>
+  <section id="devices" class="devices"></section>
+</main>
+<script>
+const devicesEl = document.getElementById("devices");
+const summaryEl = document.getElementById("summary");
+const lanBaseEl = document.getElementById("lanBase");
+const qrBaseEl = document.getElementById("qrBase");
+const ngrokModeEl = document.getElementById("ngrokMode");
+
+function fmtSeconds(value) {
+  if (!value) return "0s";
+  const mins = Math.floor(value / 60);
+  const secs = value % 60;
+  return mins > 0 ? mins + "m " + secs + "s" : secs + "s";
+}
+
+function render(state) {
+  summaryEl.textContent = state.devices.length + " Pi device" + (state.devices.length === 1 ? "" : "s");
+  lanBaseEl.textContent = state.lanBaseUrl || "-";
+  qrBaseEl.textContent = state.publicBaseUrl || state.lanBaseUrl || "-";
+  ngrokModeEl.textContent = state.ngrokEnabled ? "session tunnels on demand" : "disabled";
+  if (state.devices.length === 0) {
+    devicesEl.innerHTML = '<section class="panel"><h2>No Pi devices</h2><p>Start a Pi script with the command printed by Node.</p></section>';
+    return;
+  }
+  devicesEl.innerHTML = state.devices.map(deviceCard).join("");
+}
+
+function deviceCard(device) {
+  const sessionText = device.session.active
+    ? "active, " + fmtSeconds(device.session.remainingSeconds) + " left"
+    : "none";
+  const viewerUrl = device.session.viewerUrl || "";
+  return '<article class="panel device">' +
+    '<div class="deviceHead"><div><h2>' + esc(device.name || device.id) + '</h2><p>' + esc(device.id) + '</p></div>' +
+    '<span class="pill ' + (device.connected ? 'ok' : 'bad') + '">' + (device.connected ? 'online' : 'offline') + '</span></div>' +
+    '<div class="deviceBody">' +
+      '<img class="qr" src="' + esc(new URL(device.qrUrl).pathname) + '" alt="QR for ' + esc(device.id) + '">' +
+      '<dl>' +
+        '<dt>QR target</dt><dd><a href="' + esc(device.landingUrl) + '" target="_blank" rel="noopener">' + esc(device.landingUrl) + '</a></dd>' +
+        '<dt>Camera</dt><dd>' + (device.camera ? 'running' : 'stopped') + ', ' + (device.fps || 0) + ' fps</dd>' +
+        '<dt>Frames</dt><dd>' + device.frames + '</dd>' +
+        '<dt>Session</dt><dd>' + esc(sessionText) + '</dd>' +
+        '<dt>Viewer URL</dt><dd>' + (viewerUrl ? '<a href="' + esc(viewerUrl) + '" target="_blank" rel="noopener">' + esc(viewerUrl) + '</a>' : '-') + '</dd>' +
+        '<dt>Message</dt><dd>' + esc(device.message || '-') + '</dd>' +
+        '<dt>Error</dt><dd>' + esc(device.lastError || device.session.tunnelError || '-') + '</dd>' +
+      '</dl>' +
+    '</div>' +
+    '<div class="toolbar">' +
+      '<button onclick="cmd(\\'' + escAttr(device.id) + '\\', \\'start_camera\\')">Start Camera</button>' +
+      '<button class="secondary" onclick="cmd(\\'' + escAttr(device.id) + '\\', \\'stop_camera\\')">Stop Camera</button>' +
+      '<button class="secondary" onclick="cmd(\\'' + escAttr(device.id) + '\\', \\'restart_camera\\')">Restart Camera</button>' +
+      '<button class="danger" onclick="endSession(\\'' + escAttr(device.id) + '\\')" ' + (device.session.active ? '' : 'disabled') + '>End Session</button>' +
+    '</div>' +
+  '</article>';
+}
+
+async function cmd(id, action) {
+  await post("/api/devices/" + encodeURIComponent(id) + "/commands/" + action);
+}
+async function endSession(id) {
+  await post("/api/devices/" + encodeURIComponent(id) + "/session/end");
+}
+async function post(path) {
+  const response = await fetch(path, { method: "POST" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    alert(body.error || "Request failed");
+  }
+}
+function esc(value) {
+  return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function escAttr(value) {
+  return esc(value).replace(/\\\\/g, "\\\\\\\\");
+}
+const events = new EventSource("/events");
+events.onmessage = event => render(JSON.parse(event.data));
+fetch("/api/devices").then(r => r.json()).then(render).catch(() => {});
+setInterval(() => fetch("/api/devices").then(r => r.json()).then(render).catch(() => {}), 5000);
+</script>`);
+  }
+
+  function userLandingPage(deviceId, device, req) {
+    const online = Boolean(device && device.connected);
+    const name = device ? device.name : deviceId;
+    return pageShell("Start Session", `
+<main class="center">
+  <section class="panel startPanel">
+    <h1>${escapeHtml(name)}</h1>
+    <p class="${online ? "okText" : "badText"}">${online ? "Pi is online" : "Pi is offline"}</p>
+    <form method="post" action="${escapeHtml(landingPath(deviceId))}/session">
+      <button type="submit" ${online ? "" : "disabled"}>Start a session</button>
+    </form>
+    <p class="muted">QR target: ${escapeHtml(landingUrl(deviceId, req))}</p>
+  </section>
+</main>`);
+  }
+
+  function viewerPage(device, token) {
+    const session = device.activeSession;
+    return pageShell("Live Stream", `
+<header>
+  <h1>${escapeHtml(device.name || device.id)}</h1>
+  <span id="status">connecting</span>
+  <span id="countdown">--:--</span>
+  <a href="/snapshot/${encodeURIComponent(device.id)}/${encodeURIComponent(token)}">Snapshot</a>
+</header>
+<canvas id="video" width="960" height="540"></canvas>
+<script>
+const token = ${JSON.stringify(token)};
+const deviceId = ${JSON.stringify(device.id)};
+const expiresAt = ${session.expiresAt};
+const canvas = document.getElementById("video");
+const ctx = canvas.getContext("2d", { alpha: false });
+const statusEl = document.getElementById("status");
+const countdownEl = document.getElementById("countdown");
+let latest = null;
+let drawing = false;
+let frames = 0;
+let lastFps = performance.now();
+function wsUrl() {
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  return scheme + "//" + location.host + "/ws/view/" + encodeURIComponent(deviceId) + "/" + encodeURIComponent(token);
+}
+function tick() {
+  const seconds = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+  countdownEl.textContent = "expires " + Math.floor(seconds / 60).toString().padStart(2, "0") + ":" + (seconds % 60).toString().padStart(2, "0");
+  if (seconds <= 0) location.reload();
+}
+function connect() {
+  statusEl.textContent = "connecting";
+  const ws = new WebSocket(wsUrl());
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => statusEl.textContent = "live";
+  ws.onmessage = event => { latest = event.data; if (!drawing) requestAnimationFrame(draw); };
+  ws.onclose = () => { statusEl.textContent = "reconnecting"; setTimeout(connect, 1000); };
+  ws.onerror = () => ws.close();
+}
+function drawFallback(data) {
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(new Blob([data], { type: "image/jpeg" }));
+    const image = new Image();
+    image.onload = () => {
+      canvas.width = image.naturalWidth || canvas.width;
+      canvas.height = image.naturalHeight || canvas.height;
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve();
+    };
+    image.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+    image.src = url;
+  });
+}
+async function draw() {
+  const data = latest;
+  latest = null;
+  if (!data) { drawing = false; return; }
+  drawing = true;
+  try {
+    if ("createImageBitmap" in window) {
+      const bitmap = await createImageBitmap(new Blob([data], { type: "image/jpeg" }));
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      ctx.drawImage(bitmap, 0, 0);
+      bitmap.close();
+    } else {
+      await drawFallback(data);
+    }
+  } catch (_error) {
+    await drawFallback(data);
+  }
+  frames += 1;
+  const now = performance.now();
+  if (now - lastFps >= 1000) {
+    statusEl.textContent = "live " + frames + " fps";
+    frames = 0;
+    lastFps = now;
+  }
+  if (latest) requestAnimationFrame(draw);
+  else drawing = false;
+}
+setInterval(tick, 1000);
+tick();
+connect();
+</script>`);
+  }
+
+  function userMessagePage(title, message) {
+    return pageShell(title, `<main class="center"><section class="panel startPanel"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></section></main>`);
+  }
+
+  function pageShell(title, body) {
     return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cab Cam Control</title>
+  <title>${escapeHtml(title)}</title>
   <style>
     :root {
       color-scheme: light;
       font-family: Arial, Helvetica, sans-serif;
       background: #f4f6f2;
       color: #202124;
-      --panel: #ffffff;
+      --panel: #fff;
       --border: #c7cdc2;
-      --ink-muted: #59615a;
+      --muted: #59615a;
       --accent: #0f766e;
       --accent-dark: #0b5f59;
       --danger: #b42318;
-      --warn: #a16207;
     }
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; }
     header {
       min-height: 58px;
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
-      justify-content: space-between;
-      gap: 16px;
+      gap: 12px;
       padding: 12px 18px;
       background: #252821;
       color: #fff;
     }
-    h1 { margin: 0; font-size: 20px; line-height: 1.2; }
-    main { width: min(100%, 1180px); margin: 0 auto; padding: 18px; display: grid; gap: 14px; }
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      min-height: 30px;
-      border-radius: 999px;
-      padding: 0 12px;
-      background: #3a3e34;
-      color: #eef4e8;
-      font-size: 13px;
-      font-weight: 700;
-    }
-    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-    .panel, .metric {
+    h1, h2, p { margin-top: 0; }
+    h1 { font-size: 22px; }
+    h2 { font-size: 18px; }
+    a { color: #0f5f8f; overflow-wrap: anywhere; }
+    main { width: min(100%, 1160px); margin: 0 auto; padding: 18px; }
+    .center { min-height: 100vh; display: grid; place-items: center; }
+    .panel {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 8px;
+      padding: 14px;
     }
-    .metric { padding: 12px; min-height: 92px; }
-    .metric span { display: block; color: var(--ink-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
-    .metric strong { display: block; margin-top: 8px; font-size: 24px; line-height: 1.1; overflow-wrap: anywhere; }
-    .metric small { display: block; margin-top: 6px; color: var(--ink-muted); line-height: 1.35; overflow-wrap: anywhere; }
-    .panel { padding: 12px; }
-    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .startPanel { width: min(100%, 440px); }
+    .devices { display: grid; gap: 12px; }
+    .deviceHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .deviceHead p { color: var(--muted); margin-bottom: 0; }
+    .deviceBody { display: grid; grid-template-columns: 132px 1fr; gap: 14px; align-items: start; }
+    .qr { width: 132px; height: 132px; border: 1px solid var(--border); background: white; }
+    dl { display: grid; grid-template-columns: 110px 1fr; gap: 8px 10px; margin: 0; }
+    dt { color: var(--muted); }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     button {
-      min-height: 38px;
+      min-height: 40px;
       border: 1px solid transparent;
       border-radius: 6px;
-      padding: 0 12px;
+      padding: 0 14px;
       background: var(--accent);
-      color: white;
+      color: #fff;
       font-weight: 700;
       cursor: pointer;
     }
     button:hover { background: var(--accent-dark); }
     button.secondary { background: #fff; border-color: var(--border); color: #202124; }
-    button.secondary:hover { background: #edf1ea; }
     button.danger { background: var(--danger); }
-    button.warn { background: var(--warn); }
     button:disabled { opacity: .45; cursor: not-allowed; }
-    .share { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; }
-    input {
-      min-width: 0;
-      min-height: 38px;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0 10px;
-      font: inherit;
-      background: #fff;
-      color: #202124;
-    }
+    .pill { display: inline-flex; align-items: center; min-height: 28px; border-radius: 999px; padding: 0 10px; font-weight: 700; font-size: 13px; }
+    .pill.ok { background: #d7f2e5; color: #0d5f3a; }
+    .pill.bad { background: #fde0dc; color: #8a1f16; }
+    .okText { color: #0d5f3a; font-weight: 700; }
+    .badText { color: #8a1f16; font-weight: 700; }
+    .muted { color: var(--muted); overflow-wrap: anywhere; }
     canvas {
       display: block;
       width: 100%;
-      max-height: 58vh;
-      aspect-ratio: 16 / 9;
-      background: #050505;
-      border: 1px solid var(--border);
-      border-radius: 8px;
+      height: calc(100vh - 58px);
+      background: #000;
       object-fit: contain;
     }
-    .split { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; align-items: start; }
-    dl { display: grid; grid-template-columns: 110px 1fr; gap: 8px 10px; margin: 0; }
-    dt { color: var(--ink-muted); }
-    dd { margin: 0; overflow-wrap: anywhere; }
-    .status-line { min-height: 22px; color: var(--ink-muted); }
-    @media (max-width: 860px) {
-      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .split { grid-template-columns: 1fr; }
-      .share { grid-template-columns: 1fr; }
-      header { align-items: flex-start; flex-direction: column; }
+    @media (max-width: 720px) {
+      .deviceBody { grid-template-columns: 1fr; }
+      dl { grid-template-columns: 1fr; }
+      .center { padding: 18px; }
     }
   </style>
 </head>
-<body>
-  <header>
-    <h1>Cab Cam Control</h1>
-    <span class="badge" id="topStatus">Waiting for Pi</span>
-  </header>
-  <main>
-    <section class="grid" aria-label="Status">
-      <div class="metric"><span>Pi</span><strong id="piStatus">offline</strong><small id="piName">-</small></div>
-      <div class="metric"><span>Camera</span><strong id="cameraStatus">stopped</strong><small id="frameRate">0 fps</small></div>
-      <div class="metric"><span>Ngrok</span><strong id="ngrokStatus">starting</strong><small id="publicUrl">-</small></div>
-      <div class="metric"><span>Viewers</span><strong id="viewerCount">0</strong><small id="expiry">no active link</small></div>
-    </section>
-
-    <section class="panel">
-      <div class="toolbar">
-        <button id="startBtn" type="button">Start Camera</button>
-        <button class="secondary" id="stopBtn" type="button">Stop Camera</button>
-        <button class="secondary" id="restartBtn" type="button">Restart Camera</button>
-        <button id="newLinkBtn" type="button">New Public Link</button>
-        <button class="danger" id="endLinkBtn" type="button">End Link</button>
-        <button class="warn" id="restartNgrokBtn" type="button">New Ngrok Link</button>
-      </div>
-      <p class="status-line" id="actionStatus"></p>
-    </section>
-
-    <section class="panel share">
-      <input id="shareLink" readonly value="">
-      <button class="secondary" id="copyBtn" type="button">Copy</button>
-      <button class="secondary" id="openBtn" type="button">Open</button>
-    </section>
-
-    <section class="split">
-      <canvas id="preview" width="960" height="540"></canvas>
-      <div class="panel">
-        <dl>
-          <dt>LAN</dt><dd id="lanUrl">-</dd>
-          <dt>Public</dt><dd id="publicBase">-</dd>
-          <dt>Last frame</dt><dd id="lastSeen">-</dd>
-          <dt>Pi address</dt><dd id="piAddress">-</dd>
-          <dt>Message</dt><dd id="message">-</dd>
-          <dt>Error</dt><dd id="error">-</dd>
-        </dl>
-      </div>
-    </section>
-  </main>
-  <script>
-    const topStatus = document.getElementById("topStatus");
-    const piStatus = document.getElementById("piStatus");
-    const piName = document.getElementById("piName");
-    const cameraStatus = document.getElementById("cameraStatus");
-    const frameRate = document.getElementById("frameRate");
-    const ngrokStatus = document.getElementById("ngrokStatus");
-    const publicUrl = document.getElementById("publicUrl");
-    const viewerCount = document.getElementById("viewerCount");
-    const expiry = document.getElementById("expiry");
-    const shareLink = document.getElementById("shareLink");
-    const actionStatus = document.getElementById("actionStatus");
-    const lanUrl = document.getElementById("lanUrl");
-    const publicBase = document.getElementById("publicBase");
-    const lastSeen = document.getElementById("lastSeen");
-    const piAddress = document.getElementById("piAddress");
-    const message = document.getElementById("message");
-    const error = document.getElementById("error");
-    const restartNgrokBtn = document.getElementById("restartNgrokBtn");
-    const canvas = document.getElementById("preview");
-    const ctx = canvas.getContext("2d", { alpha: false });
-    let latestFrame = null;
-    let drawing = false;
-    let lastState = null;
-
-    function fullLink(state) {
-      if (!state.session.active || !state.session.path) return "";
-      const base = state.publicBaseUrl || location.origin;
-      return base.replace(/\\/$/, "") + state.session.path;
-    }
-
-    function render(state) {
-      lastState = state;
-      topStatus.textContent = state.pi.connected ? "Pi connected" : "Waiting for Pi";
-      piStatus.textContent = state.pi.connected ? "online" : "offline";
-      piName.textContent = state.pi.name || "-";
-      cameraStatus.textContent = state.pi.camera ? "running" : "stopped";
-      frameRate.textContent = (state.pi.fps || 0) + " fps";
-      ngrokStatus.textContent = state.ngrok.enabled ? (state.ngrok.running ? "online" : (state.ngrok.starting ? "starting" : "offline")) : "disabled";
-      publicUrl.textContent = state.ngrok.publicUrl || "-";
-      viewerCount.textContent = String(state.viewers || 0);
-      const remaining = state.session.remainingSeconds || 0;
-      expiry.textContent = state.session.active ? Math.ceil(remaining / 60) + " min remaining" : "no active link";
-      shareLink.value = fullLink(state);
-      lanUrl.textContent = state.lanBaseUrl || "-";
-      publicBase.textContent = state.publicBaseUrl || "-";
-      lastSeen.textContent = state.pi.lastSeen || "-";
-      piAddress.textContent = state.pi.remoteAddress || "-";
-      message.textContent = state.pi.message || "-";
-      error.textContent = state.pi.lastError || state.ngrok.lastError || "-";
-      restartNgrokBtn.disabled = !state.ngrok.enabled || state.ngrok.starting;
-      document.getElementById("endLinkBtn").disabled = !state.session.active;
-      document.getElementById("copyBtn").disabled = !shareLink.value;
-      document.getElementById("openBtn").disabled = !shareLink.value;
-    }
-
-    async function post(path) {
-      actionStatus.textContent = "working";
-      const response = await fetch(path, { method: "POST" });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || "Request failed");
-      actionStatus.textContent = "done";
-      setTimeout(() => { if (actionStatus.textContent === "done") actionStatus.textContent = ""; }, 1200);
-      return body;
-    }
-
-    document.getElementById("startBtn").onclick = () => post("/api/pi/start").catch(err => actionStatus.textContent = err.message);
-    document.getElementById("stopBtn").onclick = () => post("/api/pi/stop").catch(err => actionStatus.textContent = err.message);
-    document.getElementById("restartBtn").onclick = () => post("/api/pi/restart").catch(err => actionStatus.textContent = err.message);
-    document.getElementById("newLinkBtn").onclick = () => post("/api/sessions").catch(err => actionStatus.textContent = err.message);
-    document.getElementById("endLinkBtn").onclick = () => post("/api/sessions/end").catch(err => actionStatus.textContent = err.message);
-    restartNgrokBtn.onclick = () => post("/api/ngrok/restart").catch(err => actionStatus.textContent = err.message);
-    document.getElementById("copyBtn").onclick = async () => {
-      if (!shareLink.value) return;
-      await navigator.clipboard.writeText(shareLink.value);
-      actionStatus.textContent = "copied";
-    };
-    document.getElementById("openBtn").onclick = () => {
-      if (shareLink.value) window.open(shareLink.value, "_blank", "noopener");
-    };
-
-    const events = new EventSource("/events");
-    events.onmessage = event => render(JSON.parse(event.data));
-    events.onerror = async () => {
-      try {
-        const response = await fetch("/status.json");
-        if (response.ok) render(await response.json());
-      } catch (_error) {}
-    };
-
-    function previewWsUrl() {
-      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-      return scheme + "//" + location.host + "/ws/dashboard-preview";
-    }
-
-    function connectPreview() {
-      const ws = new WebSocket(previewWsUrl());
-      ws.binaryType = "arraybuffer";
-      ws.onmessage = event => {
-        latestFrame = event.data;
-        if (!drawing) requestAnimationFrame(draw);
-      };
-      ws.onclose = () => setTimeout(connectPreview, 1000);
-      ws.onerror = () => ws.close();
-    }
-
-    function drawFallback(data) {
-      return new Promise(resolve => {
-        const url = URL.createObjectURL(new Blob([data], { type: "image/jpeg" }));
-        const image = new Image();
-        image.onload = () => {
-          canvas.width = image.naturalWidth || canvas.width;
-          canvas.height = image.naturalHeight || canvas.height;
-          ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-          URL.revokeObjectURL(url);
-          resolve();
-        };
-        image.onerror = () => { URL.revokeObjectURL(url); resolve(); };
-        image.src = url;
-      });
-    }
-
-    async function draw() {
-      const data = latestFrame;
-      latestFrame = null;
-      if (!data) { drawing = false; return; }
-      drawing = true;
-      try {
-        if ("createImageBitmap" in window) {
-          const bitmap = await createImageBitmap(new Blob([data], { type: "image/jpeg" }));
-          canvas.width = bitmap.width;
-          canvas.height = bitmap.height;
-          ctx.drawImage(bitmap, 0, 0);
-          bitmap.close();
-        } else {
-          await drawFallback(data);
-        }
-      } catch (_error) {
-        await drawFallback(data);
-      }
-      if (latestFrame) requestAnimationFrame(draw);
-      else drawing = false;
-    }
-
-    connectPreview();
-    fetch("/status.json").then(response => response.json()).then(render).catch(() => {});
-    setInterval(() => {
-      if (lastState) render(lastState);
-    }, 1000);
-  </script>
-</body>
+<body>${body}</body>
 </html>`;
   }
 
-  function viewerPage(token, session) {
-    return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cab Cam Live</title>
-  <style>
-    :root { font-family: Arial, Helvetica, sans-serif; background: #0b0d0c; color: #f7faf6; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }
-    header, footer { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 14px; background: #1d211b; }
-    strong { font-size: 16px; }
-    span { color: #c6d3c0; }
-    a, button { color: #fff; }
-    button { min-height: 34px; border: 0; border-radius: 6px; padding: 0 10px; background: #0f766e; font-weight: 700; cursor: pointer; }
-    canvas { width: 100%; height: calc(100vh - 102px); background: #000; object-fit: contain; }
-  </style>
-</head>
-<body>
-  <header>
-    <strong>Cab Cam Live</strong>
-    <span id="status">connecting</span>
-    <span id="countdown">--:--</span>
-    <a href="/snapshot/${escapeHtml(token)}">Snapshot</a>
-    <button type="button" id="copyBtn">Copy Link</button>
-  </header>
-  <canvas id="video" width="960" height="540"></canvas>
-  <footer><span>${escapeHtml(new Date(session.expiresAt).toLocaleString())}</span></footer>
-  <script>
-    const token = ${JSON.stringify(token)};
-    const expiresAt = ${session.expiresAt};
-    const canvas = document.getElementById("video");
-    const ctx = canvas.getContext("2d", { alpha: false });
-    const statusEl = document.getElementById("status");
-    const countdownEl = document.getElementById("countdown");
-    let latest = null;
-    let drawing = false;
-    let frames = 0;
-    let lastFps = performance.now();
-
-    document.getElementById("copyBtn").onclick = () => navigator.clipboard.writeText(location.href);
-
-    function wsUrl() {
-      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-      return scheme + "//" + location.host + "/ws/view/" + token;
-    }
-    function tick() {
-      const seconds = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
-      const minutes = Math.floor(seconds / 60).toString().padStart(2, "0");
-      const rest = (seconds % 60).toString().padStart(2, "0");
-      countdownEl.textContent = "expires " + minutes + ":" + rest;
-      if (seconds <= 0) location.reload();
-    }
-    function connect() {
-      statusEl.textContent = "connecting";
-      const ws = new WebSocket(wsUrl());
-      ws.binaryType = "arraybuffer";
-      ws.onopen = () => statusEl.textContent = "live";
-      ws.onmessage = event => {
-        latest = event.data;
-        if (!drawing) requestAnimationFrame(draw);
-      };
-      ws.onclose = () => {
-        statusEl.textContent = "reconnecting";
-        setTimeout(connect, 1000);
-      };
-      ws.onerror = () => ws.close();
-    }
-    function drawFallback(data) {
-      return new Promise(resolve => {
-        const url = URL.createObjectURL(new Blob([data], { type: "image/jpeg" }));
-        const image = new Image();
-        image.onload = () => {
-          canvas.width = image.naturalWidth || canvas.width;
-          canvas.height = image.naturalHeight || canvas.height;
-          ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-          URL.revokeObjectURL(url);
-          resolve();
-        };
-        image.onerror = () => { URL.revokeObjectURL(url); resolve(); };
-        image.src = url;
-      });
-    }
-    async function draw() {
-      const data = latest;
-      latest = null;
-      if (!data) { drawing = false; return; }
-      drawing = true;
-      try {
-        if ("createImageBitmap" in window) {
-          const bitmap = await createImageBitmap(new Blob([data], { type: "image/jpeg" }));
-          canvas.width = bitmap.width;
-          canvas.height = bitmap.height;
-          ctx.drawImage(bitmap, 0, 0);
-          bitmap.close();
-        } else {
-          await drawFallback(data);
-        }
-      } catch (_error) {
-        await drawFallback(data);
-      }
-      frames += 1;
-      const now = performance.now();
-      if (now - lastFps >= 1000) {
-        statusEl.textContent = "live " + frames + " fps";
-        frames = 0;
-        lastFps = now;
-      }
-      if (latest) requestAnimationFrame(draw);
-      else drawing = false;
-    }
-    setInterval(tick, 1000);
-    tick();
-    connect();
-  </script>
-</body>
-</html>`;
-  }
-
-  function expiredPage() {
-    return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cab Cam Link Expired</title>
-  <style>
-    :root { font-family: Arial, Helvetica, sans-serif; background: #f4f6f2; color: #202124; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; }
-    main { width: min(100%, 440px); border: 1px solid #c7cdc2; border-radius: 8px; background: white; padding: 20px; }
-  </style>
-</head>
-<body><main><h1>Link expired</h1><p>Ask the cab operator for a fresh stream link.</p></main></body>
-</html>`;
-  }
+  setInterval(cleanupAllSessions, 10000).unref();
 
   return {
     state,
     handleHttp,
     handleUpgrade,
-    startNgrok,
-    stopNgrok,
-    createSession,
+    stopAll() {
+      for (const device of state.devices.values()) stopSession(device);
+    },
   };
+}
+
+async function sendQrSvg(res, text) {
+  if (OptionalQRCode) {
+    const svg = await OptionalQRCode.toString(text, {
+      type: "svg",
+      errorCorrectionLevel: "M",
+      margin: 2,
+    });
+    const payload = Buffer.from(svg, "utf8");
+    res.writeHead(200, {
+      "Content-Type": "image/svg+xml; charset=utf-8",
+      "Content-Length": payload.length,
+      "Cache-Control": "no-store",
+    });
+    res.end(payload);
+    return;
+  }
+
+  let svg;
+  try {
+    svg = makeQrSvg(text);
+  } catch (_error) {
+    svg = `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="120" viewBox="0 0 420 120"><rect width="100%" height="100%" fill="white"/><text x="12" y="32" font-family="Arial" font-size="16">Install npm package "qrcode" for QR rendering.</text><text x="12" y="68" font-family="Arial" font-size="12">${escapeHtml(text)}</text></svg>`;
+  }
+  const payload = Buffer.from(svg, "utf8");
+  res.writeHead(200, {
+    "Content-Type": "image/svg+xml; charset=utf-8",
+    "Content-Length": payload.length,
+    "Cache-Control": "no-store",
+  });
+  res.end(payload);
+}
+
+function makeQrSvg(text) {
+  const qr = makeVersion5Qr(text);
+  const quiet = 4;
+  const size = qr.length + quiet * 2;
+  const rects = [];
+  for (let row = 0; row < qr.length; row += 1) {
+    for (let col = 0; col < qr.length; col += 1) {
+      if (qr[row][col]) rects.push(`<rect x="${col + quiet}" y="${row + quiet}" width="1" height="1"/>`);
+    }
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="${size}" height="${size}" fill="#fff"/><g fill="#000">${rects.join("")}</g></svg>`;
+}
+
+function makeVersion5Qr(text) {
+  const version = 5;
+  const size = 17 + version * 4;
+  const dataCodewords = 108;
+  const eccCodewords = 26;
+  const bytes = Array.from(Buffer.from(text, "utf8"));
+  if (bytes.length > 106) {
+    throw new Error("QR fallback supports URLs up to 106 bytes");
+  }
+
+  const data = encodeQrBytes(bytes, dataCodewords);
+  const ecc = reedSolomonRemainder(data, reedSolomonDivisor(eccCodewords));
+  const codewordBits = [];
+  for (const byte of data.concat(ecc)) {
+    for (let bit = 7; bit >= 0; bit -= 1) codewordBits.push(((byte >>> bit) & 1) !== 0);
+  }
+
+  const matrix = Array.from({ length: size }, () => Array(size).fill(false));
+  const reserved = Array.from({ length: size }, () => Array(size).fill(false));
+  const set = (row, col, value, isFunction = true) => {
+    if (row < 0 || row >= size || col < 0 || col >= size) return;
+    matrix[row][col] = Boolean(value);
+    if (isFunction) reserved[row][col] = true;
+  };
+
+  function finder(top, left) {
+    for (let row = -1; row <= 7; row += 1) {
+      for (let col = -1; col <= 7; col += 1) {
+        const r = top + row;
+        const c = left + col;
+        if (r < 0 || r >= size || c < 0 || c >= size) continue;
+        const black = row >= 0 && row <= 6 && col >= 0 && col <= 6
+          && (row === 0 || row === 6 || col === 0 || col === 6 || (row >= 2 && row <= 4 && col >= 2 && col <= 4));
+        set(r, c, black);
+      }
+    }
+  }
+
+  finder(0, 0);
+  finder(0, size - 7);
+  finder(size - 7, 0);
+
+  for (let index = 8; index < size - 8; index += 1) {
+    set(6, index, index % 2 === 0);
+    set(index, 6, index % 2 === 0);
+  }
+
+  for (let row = -2; row <= 2; row += 1) {
+    for (let col = -2; col <= 2; col += 1) {
+      const max = Math.max(Math.abs(row), Math.abs(col));
+      set(30 + row, 30 + col, max === 2 || max === 0);
+    }
+  }
+
+  set(4 * version + 9, 8, true);
+
+  for (let index = 0; index <= 8; index += 1) {
+    if (index !== 6) {
+      set(8, index, false);
+      set(index, 8, false);
+    }
+  }
+  for (let index = 0; index < 8; index += 1) {
+    set(8, size - 1 - index, false);
+    set(size - 1 - index, 8, false);
+  }
+
+  let bitIndex = 0;
+  for (let right = size - 1; right >= 1; right -= 2) {
+    if (right === 6) right -= 1;
+    for (let vert = 0; vert < size; vert += 1) {
+      const upward = ((right + 1) & 2) === 0;
+      const row = upward ? size - 1 - vert : vert;
+      for (let j = 0; j < 2; j += 1) {
+        const col = right - j;
+        if (reserved[row][col]) continue;
+        let bit = bitIndex < codewordBits.length ? codewordBits[bitIndex] : false;
+        bitIndex += 1;
+        if ((row + col) % 2 === 0) bit = !bit;
+        set(row, col, bit, false);
+      }
+    }
+  }
+
+  drawFormatBits(matrix, reserved, 1, 0);
+  return matrix;
+}
+
+function encodeQrBytes(bytes, dataCodewords) {
+  const bits = [];
+  const append = (value, length) => {
+    for (let bit = length - 1; bit >= 0; bit -= 1) bits.push((value >>> bit) & 1);
+  };
+  append(0x4, 4);
+  append(bytes.length, 8);
+  for (const byte of bytes) append(byte, 8);
+  const capacity = dataCodewords * 8;
+  const terminator = Math.min(4, capacity - bits.length);
+  for (let index = 0; index < terminator; index += 1) bits.push(0);
+  while (bits.length % 8 !== 0) bits.push(0);
+  const data = [];
+  for (let index = 0; index < bits.length; index += 8) {
+    let value = 0;
+    for (let bit = 0; bit < 8; bit += 1) value = (value << 1) | bits[index + bit];
+    data.push(value);
+  }
+  for (let pad = 0; data.length < dataCodewords; pad += 1) {
+    data.push(pad % 2 === 0 ? 0xec : 0x11);
+  }
+  return data;
+}
+
+function gfMultiply(x, y) {
+  let z = 0;
+  while (y !== 0) {
+    if ((y & 1) !== 0) z ^= x;
+    x <<= 1;
+    if ((x & 0x100) !== 0) x ^= 0x11d;
+    y >>>= 1;
+  }
+  return z & 0xff;
+}
+
+function reedSolomonDivisor(degree) {
+  const result = Array(degree).fill(0);
+  result[degree - 1] = 1;
+  let root = 1;
+  for (let index = 0; index < degree; index += 1) {
+    for (let j = 0; j < result.length; j += 1) {
+      result[j] = gfMultiply(result[j], root);
+      if (j + 1 < result.length) result[j] ^= result[j + 1];
+    }
+    root = gfMultiply(root, 0x02);
+  }
+  return result;
+}
+
+function reedSolomonRemainder(data, divisor) {
+  const result = Array(divisor.length).fill(0);
+  for (const byte of data) {
+    const factor = byte ^ result.shift();
+    result.push(0);
+    for (let index = 0; index < result.length; index += 1) {
+      result[index] ^= gfMultiply(divisor[index], factor);
+    }
+  }
+  return result;
+}
+
+function drawFormatBits(matrix, reserved, errorCorrectionBits, mask) {
+  const size = matrix.length;
+  const data = (errorCorrectionBits << 3) | mask;
+  let rem = data << 10;
+  for (let bit = 14; bit >= 10; bit -= 1) {
+    if (((rem >>> bit) & 1) !== 0) rem ^= 0x537 << (bit - 10);
+  }
+  const bits = ((data << 10) | rem) ^ 0x5412;
+  const get = (index) => ((bits >>> index) & 1) !== 0;
+  const set = (row, col, value) => {
+    matrix[row][col] = Boolean(value);
+    reserved[row][col] = true;
+  };
+
+  for (let index = 0; index <= 5; index += 1) set(8, index, get(index));
+  set(8, 7, get(6));
+  set(8, 8, get(7));
+  set(7, 8, get(8));
+  for (let index = 9; index < 15; index += 1) set(14 - index, 8, get(index));
+
+  for (let index = 0; index < 8; index += 1) set(size - 1 - index, 8, get(index));
+  for (let index = 8; index < 15; index += 1) set(8, size - 15 + index, get(index));
+  set(8, size - 8, true);
 }
 
 async function main() {
@@ -1448,37 +1565,28 @@ async function main() {
   });
   server.on("upgrade", app.handleUpgrade);
 
-  process.on("SIGINT", () => {
+  function stop() {
     console.log("\nStopping Cab Cam server...");
-    app.stopNgrok();
+    app.stopAll();
     server.close(() => process.exit(0));
-  });
-  process.on("SIGTERM", () => {
-    app.stopNgrok();
-    server.close(() => process.exit(0));
-  });
+  }
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
 
-  server.listen(config.port, config.host, async () => {
-    const localDashboard = `${app.state.localBaseUrl}/?admin=${encodeURIComponent(config.dashboardToken)}`;
-    const lanDashboard = `${app.state.lanBaseUrl}/?admin=${encodeURIComponent(config.dashboardToken)}`;
-    const piServerUrl = `ws://${localLanIp()}:${config.port}/ws/pi`;
-
+  server.listen(config.port, config.host, () => {
+    const lanIp = localLanIp();
     console.log(`Cab Cam Node relay listening on ${config.host}:${config.port}`);
-    console.log(`Dashboard local: ${localDashboard}`);
-    console.log(`Dashboard LAN:   ${lanDashboard}`);
-    console.log(`Pi command:      python3 qr_session_cam_server.py --server ${piServerUrl} --key ${config.piKey}`);
+    console.log(`Admin dashboard: http://127.0.0.1:${config.port}/?admin=${encodeURIComponent(config.adminToken)}`);
+    console.log(`Admin LAN:       http://${lanIp}:${config.port}/?admin=${encodeURIComponent(config.adminToken)}`);
+    console.log(`Pi command:      python3 qr_session_cam_server.py --server ws://${lanIp}:${config.port}/api/pi/ws --key ${config.piKey} --device-id <device-id>`);
     console.log(`Pi shared key:   ${config.piKey}`);
-
-    if (!config.noNgrok) {
-      try {
-        await app.startNgrok();
-      } catch (error) {
-        console.error(`ngrok failed: ${error.message}`);
-        console.error("Run with --no-ngrok for LAN-only testing, or check ngrok auth/config.");
-      }
+    if (config.publicBaseUrl) {
+      console.log(`QR base URL:     ${config.publicBaseUrl}`);
     } else {
-      console.log("ngrok disabled; public links use the dashboard browser origin.");
+      console.log(`QR base URL:     http://${lanIp}:${config.port} (override with --public-base-url when Node has a stable public URL)`);
     }
+    if (config.noNgrok) console.log("ngrok disabled: user sessions redirect to local/LAN viewer URLs.");
+    else console.log("ngrok enabled: each user Start Session creates a fresh tunnel for that Pi stream.");
   });
 }
 
@@ -1486,4 +1594,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { createApp, parseArgs, WebSocketPeer };
+module.exports = { createApp, parseArgs, WebSocketPeer, makeQrSvg };

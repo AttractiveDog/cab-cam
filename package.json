@@ -8,6 +8,9 @@
     "start:lan": "node server.js --no-ngrok",
     "check": "node --check server.js"
   },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
   "engines": {
     "node": ">=18"
   }

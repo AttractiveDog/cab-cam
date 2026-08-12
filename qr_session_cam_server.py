@@ -10,7 +10,7 @@ Run the Node server on the relay machine:
     node server.js
 
 Run this on the Raspberry Pi using the command printed by the Node server:
-    python3 qr_session_cam_server.py --server ws://<server-lan-ip>:3000/ws/pi --key <shared-key>
+    python3 qr_session_cam_server.py --server ws://<server-lan-ip>:3000/api/pi/ws --key <shared-key> --device-id cab-01
 
 Install camera dependencies on Raspberry Pi OS:
     sudo apt update
@@ -194,9 +194,10 @@ class WebSocketError(RuntimeError):
 class WebSocketClient:
     """Minimal RFC 6455 client for binary JPEG upload and JSON commands."""
 
-    def __init__(self, server_url: str, key: str, name: str, timeout: float) -> None:
+    def __init__(self, server_url: str, key: str, device_id: str, name: str, timeout: float) -> None:
         self.server_url = server_url
         self.key = key
+        self.device_id = device_id
         self.name = name
         self.timeout = timeout
         self.sock: Optional[socket.socket] = None
@@ -261,6 +262,8 @@ class WebSocketClient:
         query_items = dict(parse_qsl(parsed.query, keep_blank_values=True))
         if self.key:
             query_items["key"] = self.key
+        if self.device_id:
+            query_items["device"] = self.device_id
         if self.name:
             query_items["name"] = self.name
         query = urlencode(query_items)
@@ -390,7 +393,13 @@ class PiBridge:
                 logging.error("Initial camera startup failed: %s", exc)
 
         while not self.stop_event.is_set():
-            client = WebSocketClient(self.args.server, self.args.key, self.args.name, self.args.connect_timeout)
+            client = WebSocketClient(
+                self.args.server,
+                self.args.key,
+                self.args.device_id,
+                self.args.name,
+                self.args.connect_timeout,
+            )
             try:
                 logging.info("Connecting to Node relay: %s", self.args.server)
                 client.connect()
@@ -465,6 +474,12 @@ class PiBridge:
             return
 
         if message.get("type") == "hello":
+            device_url = message.get("device_url")
+            qr_url = message.get("qr_url")
+            if device_url:
+                logging.info("Device QR target: %s", device_url)
+            if qr_url:
+                logging.info("Device QR image:   %s", qr_url)
             self.send_status("Server acknowledged Pi")
             return
 
@@ -523,6 +538,7 @@ class PiBridge:
     def _send_hello(self) -> None:
         self._send_json({
             "type": "hello",
+            "device_id": self.args.device_id,
             "name": self.args.name,
             "camera": self.camera_running(),
             "width": self.args.width,
@@ -533,6 +549,7 @@ class PiBridge:
     def send_status(self, message: str = "") -> None:
         self._send_json({
             "type": "status",
+            "device_id": self.args.device_id,
             "name": self.args.name,
             "camera": self.camera_running(),
             "streaming": self.camera_running(),
@@ -547,6 +564,7 @@ class PiBridge:
     def send_error(self, error: str) -> None:
         self._send_json({
             "type": "error",
+            "device_id": self.args.device_id,
             "name": self.args.name,
             "camera": self.camera_running(),
             "streaming": self.camera_running(),
@@ -570,17 +588,26 @@ def url_has_key(server_url: str) -> bool:
     return any(name == "key" and value for name, value in parse_qsl(parsed.query, keep_blank_values=True))
 
 
+def default_device_id() -> str:
+    return "".join(ch.lower() if ch.isalnum() else "-" for ch in socket.gethostname()).strip("-") or "pi"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Publish Raspberry Pi camera frames to the Cab Cam Node relay.")
     parser.add_argument(
         "--server",
-        default=os.environ.get("CAB_CAM_SERVER", "ws://127.0.0.1:3000/ws/pi"),
-        help="Node relay Pi WebSocket URL. Default: ws://127.0.0.1:3000/ws/pi",
+        default=os.environ.get("CAB_CAM_SERVER", "ws://127.0.0.1:3000/api/pi/ws"),
+        help="Node relay Pi WebSocket URL. Default: ws://127.0.0.1:3000/api/pi/ws",
     )
     parser.add_argument(
         "--key",
         default=os.environ.get("PI_SHARED_KEY", ""),
         help="Shared Pi key printed by the Node server. Can also be PI_SHARED_KEY.",
+    )
+    parser.add_argument(
+        "--device-id",
+        default=os.environ.get("CAB_CAM_DEVICE_ID", default_device_id()),
+        help="Stable Pi device id used for its QR route. Default: hostname.",
     )
     parser.add_argument("--name", default=socket.gethostname(), help="Pi name shown in the dashboard.")
     parser.add_argument("--connect-timeout", type=float, default=10.0, help="WebSocket connect/read timeout in seconds.")
